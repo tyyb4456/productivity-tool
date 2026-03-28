@@ -1,0 +1,348 @@
+=== Running test_user_context_builder ===
+d:\zen2\app\test.py:10: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().date().isoformat()
+🧠 Running User Context Builder Node...
+
+
+-----------------------------------
+
+
+🧠 Cognitive State Assessment: {'cognitive_load': 'high', 'cognitive_load_score': 7.0, 'focus_level': 'low', 'stress_level': 'high', 'stress_level_score': 7.0, 'burnout_risk': False, 'energy_level': 'low', 'energy_level_score': 3.0, 'wellbeing_suggestion': 'Start your day with a quick 5-minute energizing stretch to combat tiredness.', 'productivity_suggestion': "Prioritize your tasks by importance and break down the 'Finish report' task into smaller, manageable subtasks.", 'reasoning': 'The assessment indicates high cognitive load and stress due to the upcoming deadlines, late-night communication, negative tone in recent messages, and insufficient sleep. The low energy level and tired mood further contribute to a reduced focus level. The cognitive load score is 7, reflecting the pressure from the report and client reply. The stress level score is 7, considering the communication patterns and deadlines. While the HRV is low and RHR is slightly elevated, suggesting stress, the burnout risk is currently assessed as false but trending in that direction if 
+patterns continue. The energy level is low (3) due to poor sleep and low step count.', 'detected_stress_signatures': ['low_energy', 'high_stress_workload', 'communication_stress']}
+
+
+-----------------------------------
+
+
+
+=== Cognitive State ===
+{'cognitive_load': 'high', 'cognitive_load_score': 7.0, 'focus_level': 'low', 'stress_level': 'high', 'stress_level_score': 7.0, 'burnout_risk': False, 'energy_level': 'low', 'energy_level_score': 3.0, 'wellbeing_suggestion': 'Start your day with a quick 5-minute energizing stretch to combat tiredness.', 'productivity_suggestion': "Prioritize your tasks 
+by importance and break down the 'Finish report' task into smaller, manageable subtasks.", 'reasoning': 'The assessment indicates high cognitive load and stress due to the upcoming deadlines, late-night communication, negative tone in recent messages, and insufficient sleep. The low energy level and tired mood further contribute to a reduced focus level. The cognitive load score is 7, reflecting the pressure from the report and client reply. The stress level score is 7, considering the communication patterns and deadlines. While the HRV is low and RHR is slightly elevated, suggesting stress, the burnout risk is currently assessed as false but trending in that direction if patterns continue. The energy level is low (3) due to poor sleep and low step count.', 'detected_stress_signatures': ['low_energy', 'high_stress_workload', 'communication_stress']}
+
+=== Alerts ===
+⚠️ Low energy detected: Recommend rest and recovery actions.
+
+=== Recent Activities ===
+[2025-07-20T10:29:49.583607] Updated cognitive state: Load=high, Focus=low, Stress=high, BurnoutRisk=False, Energy=low, Suggestion=(Start your day with a quick 5-minute energizing stretch to combat tiredness., Prioritize your tasks by importance and break down the 'Finish report' task into smaller, manageable subtasks.), Reasoning=The assessment indicates high cognitive load and stress due to the upcoming deadlines, late-night communication, negative tone in recent messages, and insufficient sleep. The low energy level and tired mood further contribute to a reduced focus level. The cognitive load score is 7, reflecting the pressure from the report and client reply. The stress level score is 7, considering the communication patterns and deadlines. While the HRV is low and RHR is slightly elevated, suggesting stress, the burnout risk is currently assessed as false but trending in that direction if patterns continue. The energy level is low (3) due to poor sleep and low step count.
+
+📊 Updated Trend Data:
+ {'cognitive_load': [0.8], 'energy_level': [0.6], 'sleep_hours': [5.5], 'deep_sleep_hours': [1.0], 'rem_sleep_hours': [0], 'wake_up_counts': [0], 'steps': [3500], 'active_minutes': [0], 'mood_entries': ['stressed'], 'sentiment_scores': ['neutral'], 'detected_stress_signatures': [], 'burnout_risk': [False], 'detected_stress_factors': [], 'resting_heart_rate': [], 'hrv': [], 'hydration_level': [], 'late_night_activity_count': [], 'productive_hours_ratio': [0.0]}
+
+
+ 🔥 Running Burnout Risk Detector Node...
+
+
+-----------------------------------
+
+
+🔥 Burnout Risk Assessment: {'burnout_risk': True, 'severity': 'moderate', 'reason': 'Multiple factors indicate a moderate risk of burnout. High cognitive load coupled with declining energy levels, reduced physical activity, and negative mood entries suggest increasing stress. Declining deep sleep further exacerbates the situation.', 'detected_stress_factors': ['high_cognitive_load_trend', 'low_energy_levels', 'decreased_physical_activity', 'negative_mood_trend', 'low_deep_sleep_trend'], 'recommended_action': 'take a break'}    
+
+
+-----------------------------------
+
+
+
+=== Burnout Risk Detector Result ===
+Burnout Risk: True
+Severity: moderate
+Reason: Multiple factors indicate a moderate risk of burnout. High cognitive load coupled with declining energy levels, reduced physical activity, and negative mood entries suggest increasing stress. Declining deep sleep further exacerbates the situation.
+Detected Stress Factors: ['high_cognitive_load_trend', 'low_energy_levels', 'decreased_physical_activity', 'negative_mood_trend', 'low_deep_sleep_trend']
+Recommended Action: take a break
+
+Recent Activities:
+• [2025-07-20T10:33:40.184015+00:00] Burnout Risk Assessment: Risk=True, Severity=moderate, Factors=['high_cognitive_load_trend', 'low_energy_levels', 'decreased_physical_activity', 'negative_mood_trend', 'low_deep_sleep_trend'], Action='take a break'
+
+====================================
+
+
+=== Initial Reprioritization Run ===
+⚖️ Running Dynamic Reprioritizer Node...
+
+
+-----------------------------------
+
+
+Reprioritization Log: [{'task_id': 'task-001', 'new_priority': 'high', 'reason': 'Project report is in progress and due soon.', 'detected_pressure_factors': None, 'requires_user_confirmation': False}, {'task_id': 'task-002', 'new_priority': 'medium', 'reason': 'Team meeting planning is important but can be postponed slightly to reduce current cognitive load.', 'detected_pressure_factors': ['high_cognitive_load', 'low_sleep_quality'], 'requires_user_confirmation': False}, {'task_id': 'task-003', 'new_priority': 'medium', 'reason': 'Code review is important, but can be slightly delayed to allow for recovery from high cognitive load and low energy. Consider delegating if possible.', 'detected_pressure_factors': ['high_cognitive_load', 'low_sleep_quality'], 'requires_user_confirmation': False}]
+
+
+-----------------------------------
+
+
+[{'detected_pressure_factors': None,
+  'new_priority': 'high',
+  'reason': 'Project report is in progress and due soon.',
+  'requires_user_confirmation': False,
+  'task_id': 'task-001'},
+ {'detected_pressure_factors': ['high_cognitive_load', 'low_sleep_quality'],
+  'new_priority': 'medium',
+  'reason': 'Team meeting planning is important but can be postponed slightly '
+            'to reduce current cognitive load.',
+  'requires_user_confirmation': False,
+  'task_id': 'task-002'},
+ {'detected_pressure_factors': ['high_cognitive_load', 'low_sleep_quality'],
+  'new_priority': 'medium',
+  'reason': 'Code review is important, but can be slightly delayed to allow '
+            'for recovery from high cognitive load and low energy. Consider '
+            'delegating if possible.',
+  'requires_user_confirmation': False,
+  'task_id': 'task-003'}]
+
+=== Applying User Feedback ===
+⚖️ Running Dynamic Reprioritizer Node...
+
+=== Final State After User Feedback ===
+[{'description': 'Complete the draft for the Q2 report.',
+  'due_date': '2025-07-15',
+  'id': 'task-001',
+  'priority': 'high',
+  'status': 'in_progress',
+  'title': 'Prepare project report'},
+ {'description': "Schedule next week's team sync.",
+  'due_date': '2025-07-20',
+  'id': 'task-002',
+  'priority': 'medium',
+  'status': 'pending',
+  'title': 'Plan team meeting'},
+ {'description': 'Go through PR #42 and #43.',
+  'due_date': '2025-07-18',
+  'id': 'task-003',
+  'priority': 'medium',
+  'status': 'pending',
+  'title': 'Review codebase'}]
+["[2025-07-20T10:34:27.072750+00:00] Task 'Prepare project report' "
+ 'reprioritized high → high (Factors: None, Reason: Project report is in '
+ 'progress and due soon.)',
+ "[2025-07-20T10:34:27.072795+00:00] Task 'Plan team meeting' reprioritized "
+ "medium → medium (Factors: ['high_cognitive_load', 'low_sleep_quality'], "
+ 'Reason: Team meeting planning is important but can be postponed slightly to '
+ 'reduce current cognitive load.)',
+ "[2025-07-20T10:34:27.072821+00:00] Task 'Review codebase' reprioritized high "
+ "→ medium (Factors: ['high_cognitive_load', 'low_sleep_quality'], Reason: "
+ 'Code review is important, but can be slightly delayed to allow for recovery '
+ 'from high cognitive load and low energy. Consider delegating if possible.)',
+ '[2025-07-20T10:34:27.078406+00:00] User confirmed reprioritization of '
+ "'Prepare project report' from high → high",
+ "[2025-07-20T10:34:27.078436+00:00] User rejected reprioritization of 'Plan "
+ "team meeting'.",
+ "[2025-07-20T10:34:27.078448+00:00] User rejected reprioritization of 'Review "
+ "codebase'."]
+
+
+ ===================================
+
+
+ 📅 Running Dynamic Schedule Adjustor Node...
+
+
+-----------------------------------
+
+
+Dynamic Schedule Adjustments: [{'item_id': 'task1', 'item_type': 'task', 'suggested_status': 'reschedule', 'new_start_time': '2025-07-21T14:00:00+00:00', 'new_end_time': None, 'reason': 'Rescheduling to Monday afternoon to reduce cognitive load today. Burnout risk is high.'}, {'item_id': 'task2', 'item_type': 'task', 'suggested_status': 'prioritize', 'new_start_time': None, 'new_end_time': None, 'reason': 'High priority, schedule is being adjusted to accommodate focus.'}, {'item_id': 'task3', 'item_type': 'task', 'suggested_status': 'prioritize', 'new_start_time': None, 'new_end_time': None, 'reason': 'Quick task, can be done before the standup.'}, {'item_id': 'event1', 'item_type': 'event', 'suggested_status': 'prioritize', 'new_start_time': None, 'new_end_time': None, 'reason': 'Daily standup, essential for team coordination.'}, {'item_id': 'event2', 'item_type': 'event', 'suggested_status': 'prioritize', 'new_start_time': None, 'new_end_time': None, 'reason': 'Client presentation, critical for business.'}]
+
+
+-----------------------------------
+
+
+
+✅ Adjustments Applied:
+- task (task1): reschedule | Reason: Rescheduling to Monday afternoon to reduce cognitive load today. Burnout risk is high.
+- task (task2): prioritize | Reason: High priority, schedule is being adjusted to accommodate focus.
+- task (task3): prioritize | Reason: Quick task, can be done before the standup.
+- event (event1): prioritize | Reason: Daily standup, essential for team coordination.
+- event (event2): prioritize | Reason: Client presentation, critical for business.
+
+📋 Recent Activities:
+- [2025-07-20T10:35:18.485930+00:00] Task 'Write project report': reschedule - Rescheduling to Monday afternoon to reduce cognitive load today. Burnout risk is high.
+- [2025-07-20T10:35:18.486065+00:00] Task 'Prepare slides for meeting': prioritize - High priority, schedule is being adjusted to accommodate focus.
+- [2025-07-20T10:35:18.486116+00:00] Task 'Update team on Slack': prioritize - Quick task, can be done before the standup.
+- [2025-07-20T10:35:18.486154+00:00] Event 'Daily Standup': prioritize - Daily standup, essential for team coordination.
+- [2025-07-20T10:35:18.486188+00:00] Event 'Client Presentation': prioritize - Client presentation, critical for business.
+
+🔒 Active Focus Block: None
+🔕 Muted Channels: None
+
+
+========================================
+
+
+d:\zen2\app\test.py:33: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "due_date": (datetime.utcnow() + timedelta(hours=2)).isoformat(),
+d:\zen2\app\test.py:40: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "due_date": (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+d:\zen2\app\test.py:50: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "last_updated": datetime.utcnow().isoformat()
+⏰ Running Intelligent Reminder Generator Node...
+
+
+-----------------------------------
+
+
+Intelligent reminder:  [{'reminder_id': 'hydration-001', 'type': 'hydration', 'message': 'Time to hydrate! Grab a glass of water.', 'urgency': 'medium', 'reason': 'Hydration status is low.'}, {'reminder_id': 'break-001', 'type': 'break', 'message': 'Take a 5-minute micro-break. Stretch, walk around, or look away from your screen.', 'urgency': 'medium', 'reason': 'Encouraging a break after prolonged deep work.'}, {'reminder_id': 'task-001-prep', 'type': 'task', 'message': 'Prepare project report due today. Start outlining the main points.', 'urgency': 'high', 'reason': 'High priority task due today.'}]
+
+
+-----------------------------------
+
+
+
+==================== TEST OUTPUT ====================
+Generated Reminders:
+- Time to hydrate! Grab a glass of water. (Type: hydration, Urgency: medium)
+- Take a 5-minute micro-break. Stretch, walk around, or look away from your screen. (Type: break, Urgency: medium)
+- Prepare project report due today. Start outlining the main points. (Type: task, Urgency: high)
+
+Recent Activities:
+- [2025-07-20T10:36:06.431333] Reminder: Time to hydrate! Grab a glass of water. (Type: hydration, Urgency: medium, Reason: Hydration status is low.)
+- [2025-07-20T10:36:06.431372] Delayed reminder (Focus Block active): Team standup meeting in 1 hour. Will remind you again closer to the time. (Reason: Delaying reminder due to 
+active Focus Block.)
+- [2025-07-20T10:36:06.431402] Reminder: Take a 5-minute micro-break. Stretch, walk around, or look away from your screen. (Type: break, Urgency: medium, Reason: Encouraging a break after prolonged deep work.)
+- [2025-07-20T10:36:06.431428] Reminder: Prepare project report due today. Start outlining the main points. (Type: task, Urgency: high, Reason: High priority task due today.)    
+
+
+======================================================
+
+
+(lang) PS D:\zen2> & C:/Users/tayyab/miniconda3/envs/lang/python.exe d:/zen2/app/test.py
+
+===== Running test_information_flow_filter =====
+🔔 Running Information Flow Filter Node...
+
+--- Filtered Notifications ---
+✅ Allowed: Email: Project deadline extended
+
+--- Recent Activities Log ---
+[2025-07-20T10:36:58.632889] Batched notification: 'Slack: Team stand-up in 5 minutes' (Active Focus Block. Can check in the next catch-up slot.)
+[2025-07-20T10:36:58.632922] Urgent notification delivered: 'Email: Project deadline extended' (Deadline changes are important for project planning and task prioritization. User 
+needs to know this asap to adjust focus.)
+[2025-07-20T10:36:58.632932] Batched notification: 'Calendar: Upcoming meeting at 3 PM' (Active Focus Block. Remind user closer to the meeting time, e.g. 15 minutes before.)     
+[2025-07-20T10:36:58.632941] Ignored notification: 'WhatsApp: Friend sent a meme' (Low importance. User is in focus mode and has elevated stress. Non-work related distractions should be suppressed completely.)
+
+===== test_information_flow_filter PASSED =====
+
+
+==============================
+
+
+(lang) PS D:\zen2> & C:/Users/tayyab/miniconda3/envs/lang/python.exe d:/zen2/app/test.py
+d:\zen2\app\test.py:50: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "last_updated": datetime.utcnow(),
+🔄 Testing Micro Intervention Suggestor Node...
+🧘 Running Micro Intervention Suggestor Node...
+
+
+-----------------------------------
+
+
+Micro Interventions: [{'suggestion_id': 'desk-stretch-1', 'message': "You've been reviewing that report for a while. How about a quick stretch to release some tension? Maybe a neck roll and shoulder shrugs?", 'type': 'physical', 'urgency': 'medium', 'reason': 'Prolonged sedentary behavior and high cognitive load can lead to physical tension and discomfort.', 'params': {'suggested_duration': 2, 'unit': 'minutes'}, 'user_feedback_prompt': 'Would you like a reminder in 15 minutes to do another stretch?'}, {'suggestion_id': 'mindful-moment-1', 'message': "That report looks intense. Let's take a minute for a quick breathing exercise to help calm your mind. Would you like a guided session?", 'type': 'mental', 'urgency': 'medium', 'reason': 'High cognitive load, stress, and anxiety can be mitigated with mindfulness techniques.', 'params': {'guided': 1, 'duration': 1, 'unit': 'minutes'}, 'user_feedback_prompt': 'Would you like me to guide you through a breathing exercise now?'}, {'suggestion_id': 'calendar-break-1', 'message': 'Given your recent trends of low 
+energy and poor sleep, how about blocking off 30 minutes later today for a complete mental break? Maybe a walk outside?', 'type': 'calendar_block', 'urgency': 'high', 'reason': 'To proactively address burnout risk and promote recovery, scheduling dedicated downtime is crucial.', 'params': {'duration': 30, 'unit': 'minutes', 'suggested_time': '14:00', 'description': 'Mental Break - Reduce Stress'}, 'user_feedback_prompt': 'Shall I schedule a 30-minute break in your calendar for this afternoon?'}]
+Next Action Suggestion: You've been reviewing that report for a while. How about a quick stretch to release some tension? Maybe a neck roll and shoulder shrugs?
+Next Action Params: {'suggested_duration': 2, 'unit': 'minutes'}
+User Feedback Prompt: Would you like a reminder in 15 minutes to do another stretch?
+
+
+-----------------------------------
+
+
+
+✅ Updated Agent State:
+Micro Interventions Suggested:
+- You've been reviewing that report for a while. How about a quick stretch to release some tension? Maybe a neck roll and shoulder shrugs? (Type: physical, Urgency: medium)      
+- That report looks intense. Let's take a minute for a quick breathing exercise to help calm your mind. Would you like a guided session? (Type: mental, Urgency: medium)
+- Given your recent trends of low energy and poor sleep, how about blocking off 30 minutes later today for a complete mental break? Maybe a walk outside? (Type: calendar_block, Urgency: high)
+
+Next Action Suggestion:
+You've been reviewing that report for a while. How about a quick stretch to release some tension? Maybe a neck roll and shoulder shrugs?
+
+User Feedback Prompt:
+Would you like a reminder in 15 minutes to do another stretch?
+
+=========================
+
+
+🔄 Running test_feedback_loop_node...
+d:\zen2\app\test.py:69: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "last_updated": datetime.utcnow()
+🔄 Running Feedback Loop Node...
+
+
+-----------------------------------
+
+
+last_feedback_summary: The user finds the current reminder frequency too high and the tone too neutral, especially in the morning. Adjusting the frequency, tone and implementing 
+context aware filtering should improve the experience. Adding time blocking as a task prioritization method should help stay focused.
+last_feedback_updates: [{'preference': 'reminder_frequency', 'old_value': 'every 30 mins', 'new_value': 'every 60 mins', 'reason': 'User finds the current frequency too distracting.'}, {'preference': 'reminder_style', 'old_value': 'neutral', 'new_value': 'motivational', 'reason': 'User prefers a more motivational tone, especially in the morning.'}, {'preference': 'task_prioritization', 'old_value': 'Not set', 'new_value': 'time_blocking', 'reason': 'With less frequent and motivational reminders, time blocking can help structure 
+the day and stay focused.'}, {'preference': 'notification_filtering', 'old_value': 'Not set', 'new_value': 'context_aware', 'reason': 'Implement context-aware notification filtering to suppress non-urgent reminders when the user is in deep work or meetings. This reduces distractions.'}]
+
+
+-----------------------------------
+
+
+✅ Preferences updated correctly.
+✅ Feedback summary: The user finds the current reminder frequency too high and the tone too neutral, especially in the morning. Adjusting the frequency, tone and implementing con
+text aware filtering should improve the experience. Adding time blocking as a task prioritization method should help stay focused.
+✅ Activity Log:
+   - [2025-07-20T10:40:16.875705] Preference 'reminder_frequency' changed from 'every 30 mins' to 'every 60 mins' (Reason: User finds the current frequency too distracting.)     
+   - [2025-07-20T10:40:16.875732] Preference 'reminder_style' changed from 'neutral' to 'motivational' (Reason: User prefers a more motivational tone, especially in the morning.)   - [2025-07-20T10:40:16.875738] Preference 'task_prioritization' changed from 'Not set' to 'time_blocking' (Reason: With less frequent and motivational reminders, time blocking can help structure the day and stay focused.)
+   - [2025-07-20T10:40:16.875745] Preference 'notification_filtering' changed from 'Not set' to 'context_aware' (Reason: Implement context-aware notification filtering to suppress non-urgent reminders when the user is in deep work or meetings. This reduces distractions.)
+
+🎉 Test Passed!
+
+========================
+
+
+d:\zen2\app\test.py:43: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "last_updated": datetime.utcnow()
+
+=== Before Adaptive Model Refiner ===
+Model Refinement Profile: {'intervention_aggressiveness': 'medium', 'schedule_rigidity': 'semi-flexible'}
+
+🧠 Running Adaptive Model Refiner Node...
+
+
+-----------------------------------
+
+
+🔧 Model refinement updates: [{'parameter': 'intervention_aggressiveness', 'old_value': 'medium', 'new_value': 'low', 'reason': "User's stress level is high and focus is low. Overly aggressive interventions may exacerbate the situation. A gentler approach is warranted to avoid overwhelming the user."}, {'parameter': 'notification_filtering_level', 'old_value': 'Not set', 'new_value': 'aggressive', 'reason': 'The user prefers fewer notifications during focus periods, and current state indicates high stress and low focus. Aggressively filtering notifications will minimize distractions and potential stressors.'}, {'parameter': 'burnout_sensitivity', 'old_value': 'Not set', 'new_value': 'high', 'reason': 'Burnout risk is medium and historical data indicates contributing factors (long hours, poor sleep). Increasing burnout sensitivity allows for earlier and more proactive interventions to prevent escalation.'}, {'parameter': 'schedule_rigidity', 'old_value': 'semi-flexible', 'new_value': 'flexible', 'reason': 'The user is experiencing high stress, which can be exacerbated by a rigid schedule. A more flexible schedule allows for adjustments based on energy levels and reduces pressure.'}]
+model refinement summary:  Based on the user's current cognitive state (high stress, low focus, medium burnout risk) and historical data (burnout factors, task reprioritization due to energy dips, preference for fewer notifications), the agent's behavior should be refined to be less intrusive and more supportive. This involves reducing intervention aggressiveness, increasing notification filtering, heightening burnout sensitivity, and adopting a more flexible schedule.
+
+
+-----------------------------------
+
+
+
+=== After Adaptive Model Refiner ===
+Model Refinement Profile: {'intervention_aggressiveness': 'low', 'schedule_rigidity': 'flexible', 'notification_filtering_level': 'aggressive', 'burnout_sensitivity': 'high'}    
+
+Refinement Summary: Based on the user's current cognitive state (high stress, low focus, medium burnout risk) and historical data (burnout factors, task reprioritization due to energy dips, preference for fewer notifications), the agent's behavior should be refined to be less intrusive and more supportive. This involves reducing intervention aggressiveness, increasing notification filtering, heightening burnout sensitivity, and adopting a more flexible schedule.
+
+Refinement Updates: [{'parameter': 'intervention_aggressiveness', 'old_value': 'medium', 'new_value': 'low', 'reason': "User's stress level is high and focus is low. Overly aggressive interventions may exacerbate the situation. A gentler approach is warranted to avoid overwhelming the user."}, {'parameter': 'notification_filtering_level', 'old_value': 'Not set', 'new_value': 'aggressive', 'reason': 'The user prefers fewer notifications during focus periods, and current state indicates high stress and low focus. Aggressively filtering notifications will minimize distractions and potential stressors.'}, {'parameter': 'burnout_sensitivity', 'old_value': 'Not set', 'new_value': 'high', 'reason': 'Burnout risk is medium and historical data indicates contributing factors (long hours, poor sleep). Increasing burnout sensitivity allows for earlier and more proactive interventions to prevent escalation.'}, {'parameter': 'schedule_rigidity', 'old_value': 'semi-flexible', 'new_value': 'flexible', 'reason': 'The user is experiencing high stress, which can be exacerbated by a rigid schedule. A more flexible schedule allows for adjustments based on energy levels and reduces pressure.'}]
+
+Recent Activities: ["[2025-07-20T10:41:04.051758] Model refinement: 'intervention_aggressiveness' changed from 'medium' to 'low' (Reason: User's stress level is high and focus is low. Overly aggressive interventions may exacerbate the situation. A gentler approach is warranted to avoid overwhelming the user.)", "[2025-07-20T10:41:04.051785] Model refinement: 'notification_filtering_level' changed from 'Not set' to 'aggressive' (Reason: The user prefers fewer notifications during focus periods, and current state indicates high stress and low focus. Aggressively filtering notifications will minimize distractions and potential stressors.)", "[2025-07-20T10:41:04.051791] Model refinement: 'burnout_sensitivity' changed from 'Not set' to 'high' (Reason: Burnout risk is medium and historical data indicates contributing factors (long hours, poor sleep). Increasing burnout sensitivity allows for earlier and more proactive interventions to prevent escalation.)", "[2025-07-20T10:41:04.051797] Model refinement: 'schedule_rigidity' changed from 'semi-flexible' to 'flexible' (Reason: The user is experiencing high stress, which can be exacerbated by a rigid schedule. A more flexible schedule allows for adjustments based on energy levels and 
+reduces pressure.)"]
+Last Updated: 2025-07-20 10:41:04.054296
+
+====================
+
+=== Running test_user_preferences_learner ===
+d:\zen2\app\test.py:14: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "timestamp": datetime.utcnow() + day_offset,
+📖 [UserPreferencesLearner] Learning user preferences from historical data...
+🕒 Adjusted preferred work hours from {'start': '09:00', 'end': '17:00'} to {'start': '11:00', 'end': '19:00'}
+🔥 Learned stress patterns: {'Sunday 10:00': 'high', 'Wednesday 10:00': 'high', 'Saturday 10:00': 'high', 'Tuesday 10:00': 'high'}
+
+
+-----------------------------------
+
+
+📖 User preferences learning complete.
+📝 Updated user preferences: {'preferred_work_hours': {'start': '11:00', 'end': '19:00'}, 'preferred_deep_work_duration': 90, 'preferred_break_interval': 60, 'stress_patterns': {'Sunday 10:00': 'high', 'Wednesday 10:00': 'high', 'Saturday 10:00': 'high', 'Tuesday 10:00': 'high'}}
+
+
+-----------------------------------
+
+
+
+=== Updated User Preferences ===
+{'preferred_work_hours': {'start': '11:00', 'end': '19:00'}, 'preferred_deep_work_duration': 90, 'preferred_break_interval': 60, 'stress_patterns': {'Sunday 10:00': 'high', 'Wednesday 10:00': 'high', 'Saturday 10:00': 'high', 'Tuesday 10:00': 'high'}}
+
+=== Recent Activities Log ===
+[2025-07-20T10:41:48.362071] Updated user preferences based on historical behavior.
