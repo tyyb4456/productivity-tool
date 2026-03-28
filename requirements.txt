@@ -1,0 +1,40 @@
+# Core agent framework
+langgraph
+langchain
+langchain-core
+
+# LLM providers  (install only what you use)
+langchain-google-genai
+langchain-openai       # optional
+langchain-anthropic       # optional
+
+# Pydantic v2  (required — v1 is EOL)
+pydantic
+
+# Retry logic
+tenacity
+
+# Structured logging
+structlog
+
+# External integrations
+composio-core
+python-dateutil
+textblob
+
+# State persistence
+redis
+psycopg2-binary
+
+# API layer (phase 4)
+fastapi
+uvicorn[standard]
+
+# Task queue (phase 3)
+celery[redis]
+
+# Dev / test
+pytest
+pytest-asyncio
+python-dotenv
+

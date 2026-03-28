@@ -1,70 +1,101 @@
-# app/nodes/update_trend_node.py
+# nodes/update_trend_node.py
+#
+# Must run BEFORE UserContextBuilder and BurnoutRiskDetector so every
+# assessment is made on fresh trend data.
+# Node order in graph_builder: ToolNode → UpdateTrend → UserContextBuilder → ...
 
-from state import AgentStateDict
-from utils.help_func import update_trend, calculate_productive_hours_ratio, detect_stress_signatures
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from statistics import mean
-from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List
+
+import structlog
+
+from state import AgentState
+from utils.help_func import (
+    calculate_productive_hours_ratio,
+    detect_stress_signatures,
+    update_trend,
+)
+
+log = structlog.get_logger(__name__)
 
 
-def updateTrend(state: AgentStateDict) -> AgentStateDict:
+def update_trend_node(state: AgentState) -> Dict[str, Any]:
     """
-    Update trend data in the agent state based on recent observations.
+    LangGraph node.
+    Appends latest observations to every trend list (max 7 entries each).
+    Returns a dict of updated trend_data fields only.
     """
-    print("🔄 Running UpdateTrend Node...")
+    log.info("update_trend_node.start", user_id=state.user_id)
 
-    # --- 🧠 Cognitive Trends ---
-    if state["cognitive_state"]["cognitive_load_score"] is not None:
-        update_trend(state["trend_data"]["cognitive_load"], state["cognitive_state"]["cognitive_load_score"])
-    if state["cognitive_state"]["energy_level_score"] is not None:
-        update_trend(state["trend_data"]["energy_level"], state["cognitive_state"]["energy_level_score"])
-    if state["cognitive_state"]["focus_level"] is not None:
-        update_trend(state["trend_data"]["focus_level"], state["cognitive_state"]["focus_level"])
+    # Work on a mutable copy of trend_data fields
+    t = state.trend_data.model_copy(deep=True)
+    cog  = state.cognitive_state
+    hlth = state.health_data
 
-    # --- 🛌 Sleep Trends ---
-    health = state["health_data"]
-    if health["sleep_hours"] is not None:
-        update_trend(state["trend_data"]["sleep_hours"], health["sleep_hours"])
-    if health["deep_sleep_hours"] is not None:
-        update_trend(state["trend_data"]["deep_sleep_hours"], health["deep_sleep_hours"])
-    if health["rem_sleep_hours"] is not None:
-        update_trend(state["trend_data"]["rem_sleep_hours"], health["rem_sleep_hours"])
-    if health["wake_up_count"] is not None:
-        update_trend(state["trend_data"]["wake_up_counts"], health["wake_up_count"])
+    # --- Cognitive ---
+    if cog.cognitive_load_score is not None:
+        update_trend(t.cognitive_load, cog.cognitive_load_score)
+    if cog.energy_level_score is not None:
+        update_trend(t.energy_level, cog.energy_level_score)
+    if cog.focus_level:
+        update_trend(t.focus_level, cog.focus_level)
 
-    # --- 🏃‍♂️ Physical Activity Trends ---
-    if health["steps_today"] is not None:
-        update_trend(state["trend_data"]["steps"], health["steps_today"])
-    if health["active_minutes"] is not None:
-        update_trend(state["trend_data"]["active_minutes"], health["active_minutes"])
+    # --- Sleep ---
+    update_trend(t.sleep_hours,      hlth.sleep_hours)
+    update_trend(t.deep_sleep_hours, hlth.deep_sleep_hours)
+    update_trend(t.rem_sleep_hours,  hlth.rem_sleep_hours)
+    update_trend(t.wake_up_counts,   hlth.wake_up_count)
 
-    # --- 😌 Mood Trends ---
-    if health["mood"]:
-        update_trend(state["trend_data"]["mood_entries"], health["mood"])
+    # --- Activity ---
+    update_trend(t.steps,          hlth.steps_today)
+    update_trend(t.active_minutes, hlth.active_minutes)
 
-    # --- 💬 Sentiment Trends ---
-    recent_msgs = state.get("recent_communication_messages", [])
+    # --- Mood ---
+    if hlth.mood:
+        update_trend(t.mood_entries, hlth.mood)
+
+    # --- Sentiment (dominant value from last 20 messages) ---
+    recent_msgs = state.recent_communication_messages
     if recent_msgs:
-        sentiments = [msg.get("sentiment") for msg in recent_msgs[-20:] if msg.get("sentiment")]
+        sentiments: List[str] = [
+            m.get("sentiment")
+            for m in recent_msgs[-20:]
+            if m.get("sentiment")
+        ]
         if sentiments:
-            avg_sentiment = max(set(sentiments), key=sentiments.count)
-            update_trend(state["trend_data"]["sentiment_scores"], avg_sentiment)
+            dominant = max(set(sentiments), key=sentiments.count)
+            update_trend(t.sentiment_scores, dominant)
 
-    # --- ⏱ Productive Hours Ratio ---
-    productive_ratio = calculate_productive_hours_ratio(state)
-    update_trend(state["trend_data"]["productive_hours_ratio"], productive_ratio)
+    # --- Vitals ---
+    if hlth.resting_heart_rate is not None:
+        update_trend(t.resting_heart_rate, hlth.resting_heart_rate)
+    if hlth.hrv is not None:
+        update_trend(t.hrv, hlth.hrv)
+    if hlth.hydration_level:
+        update_trend(t.hydration_level, hlth.hydration_level)
 
-    # --- 🛑 Detect Stress Signatures ---
-    stress_signatures = detect_stress_signatures(state)
-    state["trend_data"]["detected_stress_signatures"] = stress_signatures
+    # --- Productive hours ratio ---
+    ratio = calculate_productive_hours_ratio(state)
+    update_trend(t.productive_hours_ratio, ratio)
 
-    # --- 🔥 Burnout Risk Trend ---
-    state["trend_data"]["burnout_risk"].append(state["cognitive_state"]["burnout_risk"])
+    # --- Burnout risk flag ---
+    t.burnout_risk.append(cog.burnout_risk)
+    if len(t.burnout_risk) > 7:
+        t.burnout_risk = t.burnout_risk[-7:]
 
-    # Trim lists to keep last 7 entries
-    for key, value in state["trend_data"].items():
-        if isinstance(value, list) and len(value) > 7:
-            state["trend_data"][key] = value[-7:]
+    # --- Stress signatures (computed from the trend itself) ---
+    # Pass a temporary state with the updated trend so detection sees fresh data
+    temp_state = state.model_copy(update={"trend_data": t})
+    t.detected_stress_signatures = detect_stress_signatures(temp_state)
 
-    print("\n📊 Updated Trend Data:\n", state["trend_data"], "\n")
+    log.info(
+        "update_trend_node.done",
+        user_id=state.user_id,
+        stress_signatures=t.detected_stress_signatures,
+        productive_ratio=ratio,
+    )
 
-    return state
+    return {"trend_data": t}

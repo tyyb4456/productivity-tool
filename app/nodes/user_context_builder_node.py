@@ -1,52 +1,48 @@
-# app/nodes/user_context_builder_node.py
+# nodes/user_context_builder_node.py
 
-from state import AgentStateDict
-from datetime import datetime
+from __future__ import annotations
 
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
+import structlog
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
-from typing import Optional
+
+from models import CognitiveState
+from services.llm_service import llm_service
+from state import AgentState
+
+log = structlog.get_logger(__name__)
 
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
 
-load_dotenv()
-
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
-
-
-class CognitiveAssessment(BaseModel):
-    cognitive_load: str = Field(..., description="Overall mental workload based on meetings, tasks, and patterns. Options: low, normal, high, overloaded.")
-    cognitive_load_score: float = Field(..., description="Optional score for cognitive load, if applicable." )
-    focus_level: str = Field(...,description="Predicted concentration ability at current time. Options: low, normal, high.")
-    stress_level: str = Field(...,description="Current stress state considering workload, mood, and late-night activity. Options: low, normal, high, burnout_risk.")
-    stress_level_score: float = Field(..., description="Optional score for stress level, if applicable." )
-    burnout_risk: bool = Field(..., description="True if cumulative patterns suggest burnout risk.")
-    energy_level: str = Field(..., description="Current physical and mental energy reserves. Options: low, moderate, high.")
-    energy_level_score: float = Field(..., description="Optional score for energy level, if applicable.")
-    wellbeing_suggestion: str = Field(..., description='A small, supportive action to help restore balance. (e.g., hydration, stretch, mindfulness).')
-    productivity_suggestion: str = Field(..., description='A focus-enhancing action. (e.g., batch emails, start deep work, plan next day).')
-    reasoning: str = Field(... , description="A clear explanation of how this assessment was made, referencing the provided inputs and patterns.")
-    detected_stress_signatures : list[str] = Field(..., description="Any detected stress signatures based on the assessment. (e.g., high_stress_burnout, low_energy).")
+class _CognitiveAssessment(BaseModel):
+    cognitive_load: str = Field(..., pattern="^(low|normal|high|overloaded)$")
+    cognitive_load_score: float = Field(..., ge=0.0, le=10.0)
+    focus_level: str = Field(..., pattern="^(low|normal|high)$")
+    stress_level: str = Field(..., pattern="^(low|normal|high|burnout_risk)$")
+    stress_level_score: float = Field(..., ge=0.0, le=10.0)
+    burnout_risk: bool
+    energy_level: str = Field(..., pattern="^(low|normal|moderate|high)$")
+    energy_level_score: float = Field(..., ge=0.0, le=10.0)
+    wellbeing_suggestion: str
+    productivity_suggestion: str
+    reasoning: str
+    detected_stress_signatures: List[str] = Field(default_factory=list)
 
 
+_parser = PydanticOutputParser(pydantic_object=_CognitiveAssessment)
 
-parser = PydanticOutputParser(pydantic_object=CognitiveAssessment)
-
-
-from langchain.prompts import PromptTemplate
-
-prompt = PromptTemplate(
+_PROMPT = PromptTemplate(
     template="""
 You are ZenMaster, a hyper-intelligent wellbeing and productivity coach.
 
-Synthesize multi-source user data to:
-1. Assess real-time cognitive & physical state
-2. Detect stress/burnout patterns
-3. Provide dual actionable recommendations (wellbeing + productivity)
-4. Update long-term preferences if patterns emerge
+Synthesize multi-source user data to assess the user's real-time cognitive and physical state.
 
 ---
 
@@ -67,138 +63,128 @@ Synthesize multi-source user data to:
 
 ---
 
-💡 **Your Task:**
-1. **Assess Cognitive State:**
-    - cognitive_load (low | normal | high | overloaded)
-    - cognitive_load_score (1–10)
-    - focus_level (low | normal | high)
-    - stress_level (low | normal | high | burnout_risk)
-    - stress_level_score (1–10)
-    - burnout_risk (true | false)
-    - energy_level (low | moderate | high)
-    - energy_level_score (1–10)
-    - wellbeing_suggestion (short, supportive)
-    - productivity_suggestion (short, actionable)
-    - reasoning (explain how scores and suggestions were derived)
+Assess:
+- cognitive_load (low | normal | high | overloaded) + score 1–10
+- focus_level (low | normal | high)
+- stress_level (low | normal | high | burnout_risk) + score 1–10
+- burnout_risk (true | false)
+- energy_level (low | moderate | high) + score 1–10
+- wellbeing_suggestion (short, supportive)
+- productivity_suggestion (short, actionable)
+- reasoning (explain scores referencing input data)
+- detected_stress_signatures (list of tags, e.g. low_energy, high_stress_workload)
 
-2. **Generate Dual Suggestions (context-aware):**
-    - 🧘‍♀️ `wellbeing`: Recommend a small, supportive action to help restore balance. (e.g., hydration, stretch, mindfulness).
-    - 📈 `productivity`: Suggest a focus-enhancing action. (e.g., batch emails, start deep work, plan next day).
-
-   ✅ If time_of_day == "morning":
-      - wellbeing tone: energizing
-      - productivity tone: planning/preparation
-   ✅ If time_of_day == "evening":
-      - wellbeing tone: winding down
-      - productivity tone: reflection/closure
-
-3. **Explain Your Reasoning:**
-   - Summarize how you derived your assessment.
-   - Reference meetings, tasks, sleep, steps, mood, and time of day.
-
----
+If time_of_day == morning: energizing wellbeing tone, planning productivity tone.
+If time_of_day == evening: wind-down wellbeing tone, reflection productivity tone.
 
 {format_instructions}
 """,
     input_variables=[
-        "calendar_summary", "task_summary","comm_summary", "health_summary", "mood", "time_of_day"
+        "calendar_summary", "task_summary", "comm_summary",
+        "health_summary", "mood", "time_of_day",
     ],
-    partial_variables={"format_instructions": parser.get_format_instructions()}
+    partial_variables={"format_instructions": _parser.get_format_instructions()},
 )
 
 
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
-def user_context_builder(state: AgentStateDict) -> AgentStateDict:
-    print("🧠 Running User Context Builder Node...")
+def user_context_builder(state: AgentState) -> Dict[str, Any]:
+    log.info("user_context_builder.start", user_id=state.user_id)
 
-    # 📅 Summarize calendar events
-    today_str = datetime.utcnow().date().isoformat()
-    calendar_summary = "\n".join([
-        f"- {event['title']} ({event['start_time'][11:16]}–{event['end_time'][11:16]})"
-        for event in state["calendar_events"]
-        if event.get("start_time", "").startswith(today_str)
-    ]) or "No meetings today."
+    now     = datetime.now(timezone.utc)
+    today   = now.date().isoformat()
 
-    # ✅ Summarize tasks
-    task_summary = "\n".join([
-        f"- {task['title']} | Due: {task.get('due_date', 'N/A')} | Priority: {task['priority']}"
-        for task in state["tasks"] if task["status"] != "completed"
-    ]) or "No pending tasks."
+    # --- Build prompt inputs ---
+    calendar_summary = "\n".join(
+        f"- {ev.title} ({ev.start_time[11:16]}–{ev.end_time[11:16]})"
+        for ev in state.calendar_events
+        if ev.start_time.startswith(today)
+    ) or "No meetings today."
 
-    # 💬 Summarize communication activity
-    comm_insight = state.get("communication_insight", {})
+    task_summary = "\n".join(
+        f"- {t.title} | Due: {t.due_date or 'N/A'} | Priority: {t.priority}"
+        for t in state.tasks
+        if t.status != "completed"
+    ) or "No pending tasks."
+
+    ci = state.communication_insight
     comm_summary = (
-        f"Volume: {comm_insight.get('message_volume', 0)}, "
-        f"Avg Length: {comm_insight.get('avg_message_length', 0)}, "
-        f"Late Night: {comm_insight.get('late_night_activity', False)}, "
-        f"Recent Tone: {comm_insight.get('sentiment_trend', 'neutral')}"
-    ) if comm_insight else "No recent communication data available."
-
-    # 🛌 Summarize health data
-    health_data = state.get("health_data", {})
-    health_summary = (
-        f"Sleep: {health_data.get('sleep_hours', 0)}h, "
-        f"Steps: {health_data.get('steps_today', 0)}, "
-        f"HRV: {health_data.get('hrv', 'N/A')}, "
-        f"RHR: {health_data.get('resting_heart_rate', 'N/A')}"
+        f"Volume: {ci.message_volume}, "
+        f"Avg Length: {ci.avg_message_length}, "
+        f"Late Night: {ci.late_night_activity}, "
+        f"Trend: {ci.sentiment_trend}"
     )
 
-    # 😌 Mood & Time
-    mood = health_data.get("mood", "neutral")
-    time_of_day = "morning" if datetime.utcnow().hour < 12 else "evening"
+    hd = state.health_data
+    health_summary = (
+        f"Sleep: {hd.sleep_hours}h, Steps: {hd.steps_today}, "
+        f"HRV: {hd.hrv or 'N/A'}, RHR: {hd.resting_heart_rate or 'N/A'}"
+    )
 
-    # 📝 Format prompt
-    formatted_prompt = prompt.format(
+    time_of_day = "morning" if now.hour < 12 else "evening"
+
+    prompt_str = _PROMPT.format(
         calendar_summary=calendar_summary,
         task_summary=task_summary,
         comm_summary=comm_summary,
         health_summary=health_summary,
-        mood=mood,
-        time_of_day=time_of_day
+        mood=hd.mood,
+        time_of_day=time_of_day,
     )
 
-    # 🧠 Run LLM reasoning
-    response = llm.invoke(formatted_prompt)
-
+    # --- Invoke LLM ---
     try:
-        parsed = parser.parse(response.content)
-    except Exception as e:
-        print("❌ Parsing error:", e)
-        print("Raw response:", response.content)
-        parsed = CognitiveAssessment(
-            cognitive_load="normal", cognitive_load_score=5,
+        response = llm_service.invoke(
+            prompt=prompt_str,
+            node_name="UserContextBuilder",
+            user_id=state.user_id,
+        )
+        parsed: _CognitiveAssessment = _parser.parse(response.content)
+    except Exception as exc:
+        log.error("user_context_builder.parse_failed", error=str(exc))
+        parsed = _CognitiveAssessment(
+            cognitive_load="normal", cognitive_load_score=5.0,
             focus_level="normal",
-            stress_level="normal", stress_level_score=4,
+            stress_level="normal", stress_level_score=4.0,
             burnout_risk=False,
-            energy_level="moderate", energy_level_score=5,
+            energy_level="moderate", energy_level_score=5.0,
             wellbeing_suggestion="Take a short walk.",
-            productivity_suggestion="Review your top 3 tasks."
+            productivity_suggestion="Review your top 3 tasks.",
+            reasoning="LLM parse failed — using safe defaults.",
         )
 
-    # ✅ Update state cognitive model
-    state["cognitive_state"] = parsed.model_dump()
+    new_cog = CognitiveState(**parsed.model_dump())
 
-    print("\n\n-----------------------------------\n\n")
-    print(f"🧠 Cognitive State Assessment: {state['cognitive_state']}")
-    print("\n\n-----------------------------------\n\n")
-
-    # Alerts
-    alerts = state.get("alerts", [])
-    if parsed.detected_stress_signatures and parsed.burnout_risk:
+    # --- Build alerts ---
+    alerts = list(state.alerts)
+    if new_cog.burnout_risk and new_cog.detected_stress_signatures:
         alerts.append("⚠️ Burnout risk detected: Sustained high stress and low recovery.")
-    if parsed.energy_level_score and parsed.energy_level_score <= 3 and parsed.detected_stress_signatures:
+    if new_cog.energy_level_score <= 3.0 and new_cog.detected_stress_signatures:
         alerts.append("⚠️ Low energy detected: Recommend rest and recovery actions.")
-    state["alerts"] = alerts
 
-    # ✅ Recent Activities
-    state.setdefault("recent_activities", []).append(
-        f"[{datetime.utcnow().isoformat()}] Updated cognitive state: "
-        f"Load={parsed.cognitive_load}, Focus={parsed.focus_level}, "
-        f"Stress={parsed.stress_level}, BurnoutRisk={parsed.burnout_risk}, "
-        f"Energy={parsed.energy_level}, Suggestion=({parsed.wellbeing_suggestion}, {parsed.productivity_suggestion}), "
-        f"Reasoning={parsed.reasoning}"
+    activity = (
+        f"Updated cognitive state: Load={new_cog.cognitive_load}, "
+        f"Focus={new_cog.focus_level}, Stress={new_cog.stress_level}, "
+        f"Burnout={new_cog.burnout_risk}, Energy={new_cog.energy_level}"
     )
 
-    state["last_cognitive_assessment"] = parsed.model_dump()
-    state["last_updated"] = datetime.now().isoformat()
-    return state
+    updated = state.log_activity(activity)
+
+    log.info(
+        "user_context_builder.done",
+        user_id=state.user_id,
+        cognitive_load=new_cog.cognitive_load,
+        stress_level=new_cog.stress_level,
+        burnout_risk=new_cog.burnout_risk,
+    )
+
+    return {
+        "cognitive_state": new_cog,
+        "last_cognitive_assessment": new_cog.model_dump(),
+        "alerts": alerts,
+        "recent_activities": updated.recent_activities,
+        "last_updated": updated.last_updated,
+    }

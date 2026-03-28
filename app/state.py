@@ -1,132 +1,153 @@
 # app/state.py
+#
+# AgentState is the single source of truth flowing through every LangGraph node.
+#
+# Design decisions:
+#   - Pydantic BaseModel instead of TypedDict.  Gives us validation, defaults,
+#     .model_dump() for serialisation, and schema evolution via field aliases.
+#   - All timestamps are timezone-aware ISO-8601 strings produced by
+#     datetime.now(timezone.utc).isoformat() — never datetime.utcnow().
+#   - State is IMMUTABLE inside nodes: nodes return a NEW dict produced by
+#     state.model_copy(update={...}) so LangGraph's reducer works correctly.
+#   - user_id is mandatory; everything else has a safe default so a fresh
+#     state can be created with AgentState(user_id="...").
 
-import json
-from typing import TypedDict, List, Dict, Any
-from datetime import datetime
+from __future__ import annotations
 
-from models.cognitive import CognitiveStateDict, create_default_cognitive_state
-from models.event import CalendarEventDict
-from models.health import HealthDataDict, create_default_health_data
-from models.note import NoteDict
-from models.tesk import TaskDict
-from models.communicate import CommunicationInsightDict
-from models.preference import UserPreferencesDict, create_default_user_preferences
-from models.trend import TrendDataDict, create_default_trend_data
-from models.assessment import CognitiveAssessmentSnapshotDict
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-class AgentStateDict(TypedDict):
+from pydantic import BaseModel, Field, ConfigDict
+
+from models import (
+    CalendarEvent,
+    CognitiveAssessmentSnapshot,
+    CognitiveState,
+    CommunicationInsight,
+    HealthData,
+    Note,
+    Task,
+    TrendData,
+    UserPreferences,
+)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class AgentState(BaseModel):
+    """Full agent state.  Passed between every LangGraph node."""
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
     user_id: str
-    calendar_events: List[CalendarEventDict]
-    free_busy: Dict[str, Any]
-    tasks: List[TaskDict]
-    notes: List[NoteDict]
-    communication_insight: CommunicationInsightDict
-    health_data: HealthDataDict
-    cognitive_state: CognitiveStateDict
-    alerts: List[str]
-    recent_activities: List[str]
-    last_updated: str  # ISO 8601 string
-    recent_communication_messages: List[str]
-    trend_data: TrendDataDict
-    burnout_status: Dict[str, Any]
-    schedule_adjustment_required: bool
-    wellbeing_reminder_required: bool
-    pending_user_decisions: Dict[str, Any]
-    last_reprioritization: List[Dict[str, Any]]
-    last_schedule_adjustments: List[Dict[str, Any]]
-    micro_interventions: List[Dict[str, Any]]
-    next_action_suggestion: str
-    next_action_params: Dict[str, Any]
-    user_feedback_prompt: str
-    last_feedback_summary: str
-    generated_reminders: List[Dict[str, Any]]
-    pending_notifications: List[str]
-    last_model_refinement_summary: str
-    last_model_refinement_updates: List[Dict[str, Any]]
-    assessment_history: List[CognitiveAssessmentSnapshotDict]
-    user_preferences: UserPreferencesDict
-    active_focus_block: bool
-    muted_channels: List[str]
-    current_activity: str
-    user_location: str
-    recent_feedback: str
-    active_focus_session: Dict[str, Any]
-    last_cognitive_assessment: Dict[str, Any]
-    last_information_filter_decisions: List[Dict[str, Any]]
-    active_reminders: List[Dict[str, Any]]
-    model_refinement_profile: Dict[str, Any]
-    last_calendar_blocks: List[Dict[str, Any]]
 
+    # ------------------------------------------------------------------
+    # Data ingested by ToolNode
+    # ------------------------------------------------------------------
+    calendar_events: List[CalendarEvent] = Field(default_factory=list)
+    free_busy: Dict[str, Any] = Field(default_factory=dict)
+    tasks: List[Task] = Field(default_factory=list)
+    notes: List[Note] = Field(default_factory=list)
+    communication_insight: CommunicationInsight = Field(
+        default_factory=CommunicationInsight
+    )
+    health_data: HealthData = Field(default_factory=HealthData)
+    recent_communication_messages: List[Dict[str, Any]] = Field(default_factory=list)
 
-def create_default_agent_state(user_id: str) -> AgentStateDict:
-    return AgentStateDict(
-        user_id=user_id,
-        calendar_events=[],
-        free_busy={},
-        tasks=[],
-        notes=[],
-        communication_insight=CommunicationInsightDict(
-            message_volume=0,
-            avg_message_length=0,
-            late_night_activity=False,
-            sentiment_score=0.0,
-            sentiment_trend="neutral",
-            source="N/A"
-        ),
-        health_data=create_default_health_data(),
-        cognitive_state=create_default_cognitive_state(),
-        alerts=[],
-        recent_activities=[],
-        last_updated=datetime.utcnow().isoformat(),
-        recent_communication_messages=[],
-        trend_data=create_default_trend_data(),
-        burnout_status={},
-        schedule_adjustment_required=False,
-        wellbeing_reminder_required=False,
-        pending_user_decisions={},
-        last_reprioritization=[],
-        last_schedule_adjustments=[],
-        micro_interventions=[],
-        next_action_suggestion="",
-        next_action_params={},
-        user_feedback_prompt="",
-        last_feedback_summary="",
-        generated_reminders=[],
-        pending_notifications=[],
-        last_model_refinement_summary="",
-        last_model_refinement_updates=[],
-        assessment_history=[],
-        user_preferences=create_default_user_preferences(),
-        active_focus_block=False,
-        muted_channels=[],
-        current_activity="",
-        user_location="",
-        recent_feedback="",
-        active_focus_session={},
-        last_cognitive_assessment={},
-        last_information_filter_decisions=[],
-        active_reminders=[],
-        model_refinement_profile={},
-        last_calendar_blocks=[]
+    # ------------------------------------------------------------------
+    # Core assessments (set by UserContextBuilder + BurnoutRiskDetector)
+    # ------------------------------------------------------------------
+    cognitive_state: CognitiveState = Field(default_factory=CognitiveState)
+    burnout_status: Dict[str, Any] = Field(default_factory=dict)
+    last_cognitive_assessment: Dict[str, Any] = Field(default_factory=dict)
+
+    # ------------------------------------------------------------------
+    # Trend history (rolling 7-day window, updated by TrendUpdater)
+    # ------------------------------------------------------------------
+    trend_data: TrendData = Field(default_factory=TrendData)
+    assessment_history: List[CognitiveAssessmentSnapshot] = Field(
+        default_factory=list
     )
 
+    # ------------------------------------------------------------------
+    # User configuration (set by UserPreferencesLearner + FeedbackLoop)
+    # ------------------------------------------------------------------
+    user_preferences: UserPreferences = Field(default_factory=UserPreferences)
+    model_refinement_profile: Dict[str, Any] = Field(default_factory=dict)
 
-# 🌟 State Persistence
-STATE_FILE = "agent_state.json"
+    # ------------------------------------------------------------------
+    # Schedule & focus state
+    # ------------------------------------------------------------------
+    active_focus_block: bool = False
+    active_focus_session: Dict[str, Any] = Field(default_factory=dict)
+    muted_channels: List[str] = Field(default_factory=list)
+    last_calendar_blocks: List[Dict[str, Any]] = Field(default_factory=list)
+    busy_slots: List[Dict[str, Any]] = Field(default_factory=list)
 
+    # ------------------------------------------------------------------
+    # Node outputs  (used downstream, cleared each cycle)
+    # ------------------------------------------------------------------
+    last_reprioritization: List[Dict[str, Any]] = Field(default_factory=list)
+    last_schedule_adjustments: List[Dict[str, Any]] = Field(default_factory=list)
+    generated_reminders: List[Dict[str, Any]] = Field(default_factory=list)
+    micro_interventions: List[Dict[str, Any]] = Field(default_factory=list)
+    pending_notifications: List[str] = Field(default_factory=list)
+    last_information_filter_decisions: List[Dict[str, Any]] = Field(
+        default_factory=list
+    )
 
-def load_initial_state() -> AgentStateDict:
-    try:
-        with open(STATE_FILE, "r") as f:
-            data = json.load(f)
-        print("📦 Loaded existing AgentState.")
-        return data  # Already a dict
-    except (FileNotFoundError, json.JSONDecodeError):
-        print("🆕 No saved state found. Initializing fresh AgentState.")
-        return create_default_agent_state()
+    # ------------------------------------------------------------------
+    # User interaction
+    # ------------------------------------------------------------------
+    next_action_suggestion: str = ""
+    next_action_params: Dict[str, Any] = Field(default_factory=dict)
+    user_feedback_prompt: str = ""
+    recent_feedback: List[str] = Field(default_factory=list)   # ← was str; now list
+    last_feedback_summary: str = ""
+    last_feedback_updates: List[Dict[str, Any]] = Field(default_factory=list)
+    pending_user_decisions: List[Dict[str, Any]] = Field(default_factory=list)
 
+    # ------------------------------------------------------------------
+    # Adaptive model refinement
+    # ------------------------------------------------------------------
+    last_model_refinement_summary: str = ""
+    last_model_refinement_updates: List[Dict[str, Any]] = Field(default_factory=list)
 
-def save_state(state: AgentStateDict):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
-    print("💾 AgentState saved.")
+    # ------------------------------------------------------------------
+    # Control flags  (set by BurnoutRiskDetector to gate downstream nodes)
+    # ------------------------------------------------------------------
+    schedule_adjustment_required: bool = False
+    wellbeing_reminder_required: bool = False
+
+    # ------------------------------------------------------------------
+    # Observability
+    # ------------------------------------------------------------------
+    alerts: List[str] = Field(default_factory=list)
+    recent_activities: List[str] = Field(default_factory=list)
+    current_activity: str = ""
+    user_location: str = ""
+    last_updated: str = Field(default_factory=_now_iso)
+
+    # ------------------------------------------------------------------
+    # Active reminders (persisted across short cycles)
+    # ------------------------------------------------------------------
+    active_reminders: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def log_activity(self, message: str) -> "AgentState":
+        """Return a copy of self with a new activity appended."""
+        ts = datetime.now(timezone.utc).isoformat()
+        updated = self.recent_activities + [f"[{ts}] {message}"]
+        return self.model_copy(update={"recent_activities": updated, "last_updated": ts})
+
+    def touch(self) -> "AgentState":
+        """Return a copy with last_updated refreshed."""
+        return self.model_copy(update={"last_updated": _now_iso()})
+
+    model_config = ConfigDict(extra="ignore")

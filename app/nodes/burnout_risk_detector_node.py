@@ -1,157 +1,158 @@
-# app/nodes/burnout_risk_detector_node.py
+# nodes/burnout_risk_detector_node.py
 
-from state import AgentStateDict
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict
+from typing import Any, Dict, List, Optional
 
-from utils.help_func import get_trend
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+import structlog
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 
-load_dotenv()
+from services.llm_service import llm_service
+from state import AgentState
+from utils.help_func import get_trend
 
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
+log = structlog.get_logger(__name__)
 
-# 🌟 Output Schema
-class BurnoutAssessment(BaseModel):
-    burnout_risk: bool = Field(..., description="True if burnout risk detected")
-    severity: str = Field(..., description="low | moderate | high | critical")
-    reason: str = Field(..., description="Explanation for the risk assessment")
-    detected_stress_factors: List[str] = Field(
-        ..., description="Specific factors contributing to burnout risk"
-    )
-    recommended_action: Optional[str] = Field(
-        None, description="Suggested action: take a break | block calendar | defer tasks | mindfulness | sleep early"
-    )
 
-parser = PydanticOutputParser(pydantic_object=BurnoutAssessment)
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
 
-# 🌟 Prompt Template
-prompt = PromptTemplate(
+class _BurnoutAssessment(BaseModel):
+    burnout_risk: bool
+    severity: str = Field(..., pattern="^(low|moderate|high|critical)$")
+    reason: str
+    detected_stress_factors: List[str]
+    recommended_action: Optional[str] = None
+
+
+_parser = PydanticOutputParser(pydantic_object=_BurnoutAssessment)
+
+_PROMPT = PromptTemplate(
     template="""
-You are a wellbeing analyst AI. Assess the user's burnout risk by analyzing multi-day trends and patterns.
+You are a wellbeing analyst AI. Assess the user's burnout risk from multi-day trends.
 
-📊 Trends (last 3-7 days):
-- Cognitive Load Scores: {cognitive_load_trend}
-- Energy Level Scores: {energy_level_trend}
-- Sleep Quality: {sleep_trend} (total_hours, deep_sleep_hours, rem_sleep_hours, wake_up_count)
-- Physical Activity: {activity_trend} (steps, active_minutes)
-- Communication Patterns: {late_night_activity} (late-night messages), {sentiment_trend} (sentiment trends)
-- Mood Entries: {mood_trend}
-- Detected Stress Signatures: {stress_signatures}
+📊 Trends (last 3–7 days):
+- Cognitive Load: {cognitive_load_trend}
+- Energy Level: {energy_level_trend}
+- Sleep Quality: {sleep_trend}
+- Physical Activity: {activity_trend}
+- Late-night activity: {late_night_activity}
+- Sentiment trend: {sentiment_trend}
+- Mood entries: {mood_trend}
+- Detected stress signatures: {stress_signatures}
 
-📝 For assessment:
-1. Look for sustained high cognitive load without recovery.
-2. Check for consistent late-night work or communication activity.
-3. Identify declining sleep quality (less deep/REM, more wake-ups).
-4. Detect reduced physical activity compared to baseline.
-5. Note increased negative sentiment/mood trends.
-6. Weigh multiple moderate stress factors more heavily than one severe one.
+Rules:
+1. Sustained high cognitive load without recovery → flag.
+2. Consistent late-night work → flag.
+3. Declining sleep quality (less deep/REM, more wake-ups) → flag.
+4. Reduced physical activity vs baseline → flag.
+5. Multiple moderate factors weigh heavier than one severe factor.
 
-Determine:
-- If burnout risk exists (True/False)
-- Severity: low, moderate, high, critical
-- Reasons (as a list of stress factors)
-- Recommended action
+Output:
+- burnout_risk (true/false)
+- severity (low | moderate | high | critical)
+- reason (explain)
+- detected_stress_factors (list)
+- recommended_action: one of: take a break | block calendar | defer tasks | mindfulness | sleep early
 
 {format_instructions}
 """,
     input_variables=[
         "cognitive_load_trend", "energy_level_trend", "sleep_trend",
         "activity_trend", "late_night_activity", "sentiment_trend",
-        "mood_trend", "stress_signatures"
+        "mood_trend", "stress_signatures",
     ],
-    partial_variables={"format_instructions": parser.get_format_instructions()}
+    partial_variables={"format_instructions": _parser.get_format_instructions()},
 )
 
 
-def burnout_risk_detector(state: AgentStateDict) -> AgentStateDict:
-    print("🔥 Running Burnout Risk Detector Node...")
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
-    trend = state["trend_data"]
+def burnout_risk_detector(state: AgentState) -> Dict[str, Any]:
+    log.info("burnout_risk_detector.start", user_id=state.user_id)
 
-    # --- Multi-day trends ---
-    cognitive_load_trend = get_trend(trend["cognitive_load"], "CL")
-    energy_level_trend = get_trend(trend["energy_level"], "EL")
+    t = state.trend_data
+
+    # Late-night activity count
+    cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+    late_msgs = [
+        m for m in state.recent_communication_messages
+        if (ts := m.get("timestamp")) and (
+            datetime.fromisoformat(ts).hour >= 22
+            or datetime.fromisoformat(ts).hour < 7
+        )
+    ]
+    late_night_str = f"{len(late_msgs)} late-night messages in last 5 days"
+
     sleep_trend = (
-        f"Total: {trend['sleep_hours']}, "
-        f"Deep: {trend['deep_sleep_hours']}, "
-        f"REM: {trend['rem_sleep_hours']}, "
-        f"Wake-ups: {trend['wake_up_counts']}"
+        f"Total: {t.sleep_hours}, Deep: {t.deep_sleep_hours}, "
+        f"REM: {t.rem_sleep_hours}, Wake-ups: {t.wake_up_counts}"
     )
-    activity_trend = (
-        f"Steps: {trend['steps']}, Active Minutes: {trend['active_minutes']}"
-    )
-    mood_trend = ", ".join(trend["mood_entries"]) or "No mood data"
-    sentiment_trend = ", ".join(trend["sentiment_scores"]) or "No sentiment data"
+    activity_trend = f"Steps: {t.steps}, Active Minutes: {t.active_minutes}"
 
-    # --- Late-night activity detection ---
-    late_night_activity = "No recent communication data"
-    recent_msgs = state.get("recent_communication_messages", [])
-    if recent_msgs:
-        five_days_ago = datetime.now(timezone.utc) - timedelta(days=5)
-        late_night_msgs = [
-            msg for msg in recent_msgs
-            if datetime.fromisoformat(msg["timestamp"]).hour >= 22
-            or datetime.fromisoformat(msg["timestamp"]).hour < 7
-        ]
-        late_night_activity = f"{len(late_night_msgs)} late-night messages in last 5 days"
-
-    stress_signatures = ", ".join(trend["detected_stress_signatures"]) or "None"
-
-    # 🔥 Fill Prompt
-    formatted_prompt = prompt.format(
-        cognitive_load_trend=cognitive_load_trend,
-        energy_level_trend=energy_level_trend,
+    prompt_str = _PROMPT.format(
+        cognitive_load_trend=get_trend(t.cognitive_load, "CL"),
+        energy_level_trend=get_trend(t.energy_level, "EL"),
         sleep_trend=sleep_trend,
         activity_trend=activity_trend,
-        late_night_activity=late_night_activity,
-        sentiment_trend=sentiment_trend,
-        mood_trend=mood_trend,
-        stress_signatures=stress_signatures
+        late_night_activity=late_night_str,
+        sentiment_trend=", ".join(t.sentiment_scores) or "No data",
+        mood_trend=", ".join(t.mood_entries) or "No data",
+        stress_signatures=", ".join(t.detected_stress_signatures) or "None",
     )
 
-    # 🔥 Invoke LLM
-    response = llm.invoke(formatted_prompt)
-
-    # ✅ Parse response
     try:
-        parsed = parser.parse(response.content)
-    except Exception as e:
-        print("❌ Parsing error:", e)
-        print("Raw response:", response.content)
-        return state
+        response = llm_service.invoke(
+            prompt=prompt_str,
+            node_name="BurnoutRiskDetector",
+            user_id=state.user_id,
+        )
+        parsed: _BurnoutAssessment = _parser.parse(response.content)
+    except Exception as exc:
+        log.error("burnout_risk_detector.parse_failed", error=str(exc))
+        return {}
 
-    # 🔥 Apply burnout assessment to state
-    state["burnout_status"] = {
+    burnout_status = {
         "burnout_risk": parsed.burnout_risk,
         "severity": parsed.severity,
         "reason": parsed.reason,
         "detected_stress_factors": parsed.detected_stress_factors,
-        "recommended_action": parsed.recommended_action
+        "recommended_action": parsed.recommended_action,
     }
 
-    print("\n\n-----------------------------------\n\n")
-    print(f"🔥 Burnout Risk Assessment: {state['burnout_status']}")
-    print("\n\n-----------------------------------\n\n")
+    schedule_adjustment = state.schedule_adjustment_required
+    wellbeing_reminder  = state.wellbeing_reminder_required
 
-    # ✅ Log activity
-    now_iso = datetime.now(timezone.utc).isoformat()
-    state["recent_activities"].append(
-        f"[{now_iso}] Burnout Risk Assessment: "
-        f"Risk={parsed.burnout_risk}, Severity={parsed.severity}, "
-        f"Factors={parsed.detected_stress_factors}, Action='{parsed.recommended_action}'"
+    if parsed.burnout_risk:
+        if parsed.recommended_action in ("block calendar", "defer tasks"):
+            schedule_adjustment = True
+        if parsed.recommended_action in ("take a break", "mindfulness", "sleep early"):
+            wellbeing_reminder = True
+
+    activity = (
+        f"Burnout Risk Assessment: Risk={parsed.burnout_risk}, "
+        f"Severity={parsed.severity}, Factors={parsed.detected_stress_factors}, "
+        f"Action='{parsed.recommended_action}'"
+    )
+    updated = state.log_activity(activity)
+
+    log.info(
+        "burnout_risk_detector.done",
+        user_id=state.user_id,
+        burnout_risk=parsed.burnout_risk,
+        severity=parsed.severity,
     )
 
-    # 📅 Proactive Coordination
-    if parsed.burnout_risk:
-        if parsed.recommended_action in ["block calendar", "defer tasks"]:
-            state["schedule_adjustment_required"] = True
-        if parsed.recommended_action in ["take a break", "mindfulness", "sleep early"]:
-            state["wellbeing_reminder_required"] = True
-
-    state["last_updated"] = now_iso
-    return state
+    return {
+        "burnout_status": burnout_status,
+        "schedule_adjustment_required": schedule_adjustment,
+        "wellbeing_reminder_required": wellbeing_reminder,
+        "recent_activities": updated.recent_activities,
+        "last_updated": updated.last_updated,
+    }

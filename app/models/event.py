@@ -1,22 +1,37 @@
 # models/event.py
 
-from typing import TypedDict, List
+from __future__ import annotations
+from typing import List, Optional
+from pydantic import BaseModel, Field
 
 
-class CalendarEventDict(TypedDict):
-    id: str  # Unique identifier
-    title: str  # Title of the event
-    start_time: str  # ISO 8601 format
-    end_time: str  # ISO 8601 format
-    source: str  # e.g., Google Calendar, Outlook
-    location: str  # Event location
-    description: str  # Event description
-    attendees: List[str]  # List of attendees
-    is_meeting: bool  # True if it’s a meeting
-    duration_minutes: float  # Duration in minutes
-    is_recurring: bool  # True if the event is recurring
-    status: str  # tentative | confirmed | cancelled
-    last_adjustment_reason: str  # Reason for last adjustment
-    last_adjustment_time: str  # ISO 8601 format of last adjustment
-    priority: str  # low | medium | high
-    reminders: List[str]  # List of reminders set for the event
+class CalendarEvent(BaseModel):
+    """A calendar event from Google Calendar or similar."""
+
+    id: str
+    title: str
+    start_time: str                                   # ISO 8601
+    end_time: str                                     # ISO 8601
+    source: str = "unknown"
+
+    location: Optional[str] = None
+    description: Optional[str] = None
+    attendees: List[str] = Field(default_factory=list)
+
+    is_meeting: bool = False
+    duration_minutes: Optional[float] = None
+    is_recurring: bool = False
+
+    status: str = Field(
+        default="confirmed",
+        pattern="^(tentative|confirmed|cancelled)$",
+    )
+    priority: str = Field(
+        default="normal",
+        pattern="^(low|normal|high)$",
+    )
+
+    # Enriched by DynamicScheduleAdjustor
+    last_adjustment_reason: Optional[str] = None
+    last_adjustment_time: Optional[str] = None
+    reminders: List[str] = Field(default_factory=list)
