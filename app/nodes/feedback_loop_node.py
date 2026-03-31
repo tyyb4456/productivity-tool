@@ -1,138 +1,134 @@
-# app/nodes/feedback_loop_node.py
+# nodes/feedback_loop_node.py
 
-from state import AgentStateDict
-from datetime import datetime
-from typing import List, Optional, Dict, Any
+from __future__ import annotations
 
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import structlog
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
+from services.llm_service import llm_service
+from state import AgentState
 
-load_dotenv()
-
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
+log = structlog.get_logger(__name__)
 
 
-# 🌟 Output Schema
-class PreferenceUpdate(BaseModel):
-    preference: str = Field(..., description="The area being adjusted e.g. task_management, reminder_style, break_frequency")
-    new_value: str = Field(..., description="The updated preference value")
-    reason: Optional[str] = Field(None, description="Reason for this update")
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
+
+class _PreferenceUpdate(BaseModel):
+    preference: str
+    new_value: str
+    reason: Optional[str] = None
 
 
-class FeedbackResponse(BaseModel):
-    updates: List[PreferenceUpdate]
-    summary: str = Field(..., description="High-level summary of how feedback is interpreted")
+class _FeedbackResponse(BaseModel):
+    updates: List[_PreferenceUpdate]
+    summary: str
 
 
-# ✅ Initialize Parser
-parser = PydanticOutputParser(pydantic_object=FeedbackResponse)
+_parser = PydanticOutputParser(pydantic_object=_FeedbackResponse)
 
-
-# 🌟 Prompt Template
-prompt = PromptTemplate(
+_PROMPT = PromptTemplate(
     template="""
-You are an AI assistant helping personalize a user's productivity and wellbeing experience.
+You are an AI assistant personalising a user's productivity and wellbeing experience.
 
----
-
-📝 **User Feedback:**
+📝 User Feedback:
 {feedback_text}
 
-📋 **Current Preferences:**
+📋 Current Preferences:
 {current_preferences}
 
----
-
-🎯 **Your Task:**
-Analyze the feedback and suggest adjustments to:
-- Task prioritization style
-- Reminder frequency/tone
+Analyse the feedback and suggest adjustments to:
+- Task prioritisation style
+- Reminder frequency / tone
 - Break recommendations
 - Notification filtering
 - Any other relevant settings
 
-For each adjustment specify:
-- preference: (e.g., reminder_style, task_management)
-- new_value: (what it should be updated to)
-- reason: (why this change helps)
-
-Also provide a brief summary of your interpretation.
-
----
+For each adjustment specify: preference, new_value, reason.
+Also provide a brief summary of how you interpreted the feedback.
 
 {format_instructions}
 """,
     input_variables=["feedback_text", "current_preferences"],
-    partial_variables={"format_instructions": parser.get_format_instructions()}
+    partial_variables={"format_instructions": _parser.get_format_instructions()},
 )
 
 
-# 🎯 Node Function
-def feedback_loop_node(state: AgentStateDict) -> AgentStateDict:
-    print("🔄 Running Feedback Loop Node...")
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
-    if not state["recent_feedback"]:
-        print("ℹ️ No new feedback to process.")
-        return state
+def feedback_loop_node(state: AgentState) -> Dict[str, Any]:
+    log.info("feedback_loop_node.start", user_id=state.user_id,
+             feedback_count=len(state.recent_feedback))
 
-    # 📝 Combine feedback into a single string
-    feedback_text = "\n".join(state["recent_feedback"])
+    if not state.recent_feedback:
+        log.info("feedback_loop_node.skip", reason="no recent feedback")
+        return {}
 
-    # 📋 Format current preferences
-    preferences_text = "\n".join([
-        f"- {k}: {v}" for k, v in state["user_preferences"].items()
-    ]) or "None"
-
-    # 🧠 Prepare prompt
-    formatted_prompt = prompt.format(
-        feedback_text=feedback_text,
-        current_preferences=preferences_text
+    feedback_text = "\n".join(state.recent_feedback)
+    preferences_text = "\n".join(
+        f"- {k}: {v}"
+        for k, v in state.user_preferences.model_dump().items()
     )
 
-    # 🔥 Invoke LLM
-    response = llm.invoke(formatted_prompt)
+    prompt_str = _PROMPT.format(
+        feedback_text=feedback_text,
+        current_preferences=preferences_text,
+    )
 
-    # ✅ Parse response
     try:
-        parsed = parser.parse(response.content)
-    except Exception as e:
-        print("❌ Parsing error:", e)
-        print("Raw response:", response.content)
-        return state
+        response = llm_service.invoke(
+            prompt=prompt_str,
+            node_name="FeedbackLoop",
+            user_id=state.user_id,
+        )
+        parsed: _FeedbackResponse = _parser.parse(response.content)
+    except Exception as exc:
+        log.error("feedback_loop_node.parse_failed", error=str(exc))
+        return {}
 
-    # 🔥 Apply preference updates
-    update_log: List[Dict[str, Any]] = []
+    # Apply preference updates
+    prefs      = state.user_preferences.model_copy(deep=True)
+    update_log: List[Dict] = []
+    activities = list(state.recent_activities)
+
     for update in parsed.updates:
-        old_value = state["user_preferences"].get(update.preference, "Not set")
-        state["user_preferences"][update.preference] = update.new_value
+        old_value = getattr(prefs, update.preference, "Not set")
+        # Only set if the field actually exists on UserPreferences
+        if hasattr(prefs, update.preference):
+            object.__setattr__(prefs, update.preference, update.new_value)
+        else:
+            # Dynamically extend preferences dict for learned fields
+            prefs.__pydantic_fields_set__.add(update.preference)
 
         update_log.append({
             "preference": update.preference,
-            "old_value": old_value,
-            "new_value": update.new_value,
-            "reason": update.reason
+            "old_value":  str(old_value),
+            "new_value":  update.new_value,
+            "reason":     update.reason,
         })
-
-        state["recent_activities"].append(
-            f"[{datetime.utcnow().isoformat()}] Preference '{update.preference}' changed from '{old_value}' "
-            f"to '{update.new_value}' (Reason: {update.reason})"
+        ts = datetime.now(timezone.utc).isoformat()
+        activities.append(
+            f"[{ts}] Preference '{update.preference}' changed "
+            f"from '{old_value}' to '{update.new_value}' "
+            f"(Reason: {update.reason})"
         )
 
-    # ✅ Save summary and updates
-    state["last_feedback_summary"] = parsed.summary
-    state["last_feedback_updates"] = update_log
-    state["last_updated"] = datetime.utcnow()
+    log.info("feedback_loop_node.done", user_id=state.user_id,
+             updates=len(update_log))
 
-    print("\n\n-----------------------------------\n\n")
-    print('last_feedback_summary:', state["last_feedback_summary"])
-    print('last_feedback_updates:', state["last_feedback_updates"])
-    print("\n\n-----------------------------------\n\n")
-
-    # 🚮 Clear processed feedback
-    state["recent_feedback"] = []
-
-    return state
+    return {
+        "user_preferences": prefs,
+        "last_feedback_summary": parsed.summary,
+        "last_feedback_updates": update_log,
+        "recent_feedback": [],           # clear processed feedback
+        "recent_activities": activities,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }

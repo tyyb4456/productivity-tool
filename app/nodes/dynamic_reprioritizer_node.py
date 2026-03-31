@@ -1,48 +1,45 @@
-# app/nodes/dynamic_reprioritizer_node.py
+# nodes/dynamic_reprioritizer_node.py
 
-from state import AgentStateDict
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+import structlog
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
+from services.llm_service import llm_service
+from state import AgentState
+from utils.help_func import get_trend
 
-load_dotenv()
-
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
-
-
-# 🌟 Output Schema
-class TaskPriorityUpdate(BaseModel):
-    task_id: str = Field(..., description="ID of the task")
-    new_priority: str = Field(..., description="low | medium | high")
-    reason: Optional[str] = Field(None, description="Why this priority change is recommended")
-    detected_pressure_factors: Optional[List[str]] = Field(
-        None, description="Factors influencing reprioritization (e.g., ['high_cognitive_load', 'low_sleep_quality'])"
-    )
-    requires_user_confirmation: bool = Field(
-        default=False, description="True if user should approve before applying this change"
-    )
+log = structlog.get_logger(__name__)
 
 
-class ReprioritizationResponse(BaseModel):
-    updates: List[TaskPriorityUpdate]
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
+
+class _TaskPriorityUpdate(BaseModel):
+    task_id: str
+    new_priority: str = Field(..., pattern="^(low|normal|medium|high|urgent)$")
+    reason: Optional[str] = None
+    detected_pressure_factors: Optional[List[str]] = None
+    requires_user_confirmation: bool = False
 
 
-# ✅ Initialize Parser
-parser = PydanticOutputParser(pydantic_object=ReprioritizationResponse)
+class _ReprioritizationResponse(BaseModel):
+    updates: List[_TaskPriorityUpdate]
 
 
-# 🌟 Prompt Template
-prompt = PromptTemplate(
+_parser = PydanticOutputParser(pydantic_object=_ReprioritizationResponse)
+
+_PROMPT = PromptTemplate(
     template="""
-You are a task reprioritization expert AI helping balance productivity and wellbeing.
+You are a task reprioritization expert helping balance productivity and wellbeing.
 
-📊 **User State & Trends**
+📊 User State & Trends
 - Cognitive Load (current/trend): {cognitive_load} ({cognitive_load_trend})
 - Energy Level (current/trend): {energy_level} ({energy_level_trend})
 - Sleep Trends: {sleep_trends}
@@ -50,125 +47,165 @@ You are a task reprioritization expert AI helping balance productivity and wellb
 - Burnout Risk: {burnout_risk} ({burnout_trend})
 - Stress Factors: {stress_factors}
 
-📋 **Pending Tasks**
+📋 Pending Tasks
 {task_list}
 
----
-
-🎯 **Rules**
-- If high burnout risk or high cognitive load persists, consider downgrading non-urgent tasks.
+Rules:
+- High burnout risk or sustained high cognitive load → consider downgrading non-urgent tasks.
 - Keep high-urgency tasks unless health indicators show critical strain.
-- Identify detected_pressure_factors (e.g., 'low_sleep_quality', 'high_cognitive_load', 'late_night_activity').
-- Flag requires_user_confirmation = True for major downgrades (high → low).
+- List detected_pressure_factors (e.g. low_sleep_quality, high_cognitive_load).
+- Set requires_user_confirmation=true for major downgrades (high → low).
 
----
-
-For each task provide:
-- task_id
-- new_priority (low, medium, high)
-- reason
-- detected_pressure_factors
-- requires_user_confirmation (True/False)
+For each task provide: task_id, new_priority, reason, detected_pressure_factors, requires_user_confirmation.
 
 {format_instructions}
 """,
     input_variables=[
         "cognitive_load", "cognitive_load_trend", "energy_level", "energy_level_trend",
         "sleep_trends", "activity_trends", "burnout_risk", "burnout_trend",
-        "stress_factors", "task_list"
+        "stress_factors", "task_list",
     ],
-    partial_variables={"format_instructions": parser.get_format_instructions()}
+    partial_variables={"format_instructions": _parser.get_format_instructions()},
 )
 
 
-# 🎯 Node Function
-def dynamic_reprioritizer(state: AgentStateDict, user_feedback: Optional[Dict[str, bool]] = None) -> AgentStateDict:
-    print("⚖️ Running Dynamic Reprioritizer Node...")
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
-    # 📝 Handle user feedback
+def dynamic_reprioritizer(
+    state: AgentState,
+    user_feedback: Optional[Dict[str, bool]] = None,
+) -> Dict[str, Any]:
+    """
+    Two modes:
+      1. Normal run  → LLM scores every pending task, applies changes.
+      2. Feedback run → user_feedback={task_id: accepted} applies/rejects pending updates.
+    """
+    log.info("dynamic_reprioritizer.start", user_id=state.user_id)
+
+    # --- Mode 2: Apply user feedback on a previous reprioritization run ---
     if user_feedback:
-        for update in state.get("last_reprioritization", []):
-            task = next((t for t in state["tasks"] if t["id"] == update["task_id"]), None)
-            if not task:
-                continue
+        return _apply_user_feedback(state, user_feedback)
 
-            if user_feedback.get(update["task_id"], False):  # User accepted
-                old_priority = task["priority"]
-                task["priority"] = update["new_priority"]
-                state["recent_activities"].append(
-                    f"[{datetime.now(timezone.utc).isoformat()}] User confirmed reprioritization of '{task['title']}' "
-                    f"from {old_priority} → {task['priority']}"
-                )
-            else:  # User rejected
-                state["recent_activities"].append(
-                    f"[{datetime.now(timezone.utc).isoformat()}] User rejected reprioritization of '{task['title']}'."
-                )
-        state["last_updated"] = datetime.now(timezone.utc).isoformat()
-        return state
+    # --- Mode 1: LLM reprioritization ---
+    t      = state.trend_data
+    burnout = state.burnout_status
 
-    # 📊 Prepare inputs
-    trends = state["trend_data"]
-    burnout = state.get("burnout_status", {})
+    pending_tasks = [tk for tk in state.tasks if tk.status != "completed"]
+    if not pending_tasks:
+        log.info("dynamic_reprioritizer.skip", reason="no pending tasks")
+        return {}
 
-    task_list_str = "\n".join([
-        f"- {task['id']}: {task['title']} | due: {task.get('due_date')} | priority: {task['priority']} | status: {task['status']}"
-        for task in state["tasks"] if task["status"] != 'completed'
-    ]) or "None"
-
-    formatted_prompt = prompt.format(
-        cognitive_load=state["cognitive_state"]["cognitive_load"],
-        cognitive_load_trend=trends["cognitive_load"][-3:],
-        energy_level=state["cognitive_state"]["energy_level"],
-        energy_level_trend=trends["energy_level"][-3:],
-        sleep_trends=f"Deep: {trends['deep_sleep_hours'][-3:]}, REM: {trends['rem_sleep_hours'][-3:]}, Wake-ups: {trends['wake_up_counts'][-3:]}",
-        activity_trends=f"Steps: {trends['steps'][-3:]}, Active Minutes: {trends['active_minutes'][-3:]}",
-        burnout_risk=burnout.get("severity", "low"),
-        burnout_trend=trends["burnout_risk"][-3:],
-        stress_factors=burnout.get("detected_stress_factors", []),
-        task_list=task_list_str
+    task_list_str = "\n".join(
+        f"- {tk.id}: {tk.title} | due: {tk.due_date} | "
+        f"priority: {tk.priority} | status: {tk.status}"
+        for tk in pending_tasks
     )
 
-    response = llm.invoke(formatted_prompt)
+    prompt_str = _PROMPT.format(
+        cognitive_load=state.cognitive_state.cognitive_load,
+        cognitive_load_trend=get_trend(t.cognitive_load, "CL")[-3:],
+        energy_level=state.cognitive_state.energy_level,
+        energy_level_trend=get_trend(t.energy_level, "EL")[-3:],
+        sleep_trends=(
+            f"Deep: {t.deep_sleep_hours[-3:]}, "
+            f"REM: {t.rem_sleep_hours[-3:]}, "
+            f"Wake-ups: {t.wake_up_counts[-3:]}"
+        ),
+        activity_trends=f"Steps: {t.steps[-3:]}, Active: {t.active_minutes[-3:]}",
+        burnout_risk=burnout.get("severity", "low"),
+        burnout_trend=t.burnout_risk[-3:],
+        stress_factors=burnout.get("detected_stress_factors", []),
+        task_list=task_list_str,
+    )
 
-    # ✅ Parse response
     try:
-        parsed = parser.parse(response.content)
-    except Exception as e:
-        print("❌ Parsing error:", e)
-        print("Raw response:", response.content)
-        return state
+        response = llm_service.invoke(
+            prompt=prompt_str,
+            node_name="DynamicReprioritizer",
+            user_id=state.user_id,
+        )
+        parsed: _ReprioritizationResponse = _parser.parse(response.content)
+    except Exception as exc:
+        log.error("dynamic_reprioritizer.parse_failed", error=str(exc))
+        return {}
 
-    reprioritization_log = []
+    # --- Apply changes ---
+    tasks      = [tk.model_copy() for tk in state.tasks]
+    task_map   = {tk.id: tk for tk in tasks}
+    activities = list(state.recent_activities)
+    pending_decisions = list(state.pending_user_decisions)
+    reprio_log: List[Dict] = []
+
     for update in parsed.updates:
-        reprioritization_log.append(update.dict())
+        task = task_map.get(update.task_id)
+        if not task:
+            continue
 
-        # If no user confirmation needed, apply directly
+        reprio_log.append(update.model_dump())
+
         if not update.requires_user_confirmation:
-            task = next((t for t in state["tasks"] if t["id"] == update.task_id), None)
-            if task:
-                old_priority = task["priority"]
-                task["priority"] = update.new_priority
-                state["recent_activities"].append(
-                    f"[{datetime.now(timezone.utc).isoformat()}] Task '{task['title']}' reprioritized {old_priority} → {update.new_priority} "
-                    f"(Factors: {update.detected_pressure_factors}, Reason: {update.reason})"
-                )
+            old_priority     = task.priority
+            task.priority    = update.new_priority
+            ts = datetime.now(timezone.utc).isoformat()
+            activities.append(
+                f"[{ts}] Task '{task.title}' reprioritized "
+                f"{old_priority} → {update.new_priority} "
+                f"(Factors: {update.detected_pressure_factors}, "
+                f"Reason: {update.reason})"
+            )
         else:
-            # Ask user for confirmation
-            state["pending_user_decisions"].append({
+            pending_decisions.append({
                 "type": "reprioritization",
                 "task_id": update.task_id,
-                "suggestion": update.dict()
+                "suggestion": update.model_dump(),
             })
-            state["recent_activities"].append(
-                f"[{datetime.now(timezone.utc).isoformat()}] Suggested reprioritization for '{update.task_id}': "
-                f"{update.new_priority} (Confirmation needed)"
+            ts = datetime.now(timezone.utc).isoformat()
+            activities.append(
+                f"[{ts}] Suggested reprioritization for "
+                f"'{update.task_id}': {update.new_priority} (confirmation needed)"
             )
 
-    state["last_reprioritization"] = reprioritization_log
+    log.info("dynamic_reprioritizer.done", user_id=state.user_id,
+             updates=len(reprio_log))
 
-    print("\n\n-----------------------------------\n\n")
-    print('Reprioritization Log:', state["last_reprioritization"])
-    print("\n\n-----------------------------------\n\n")
+    return {
+        "tasks": tasks,
+        "last_reprioritization": reprio_log,
+        "pending_user_decisions": pending_decisions,
+        "recent_activities": activities,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }
 
-    state["last_updated"] = datetime.now(timezone.utc).isoformat()
-    return state
+
+def _apply_user_feedback(
+    state: AgentState,
+    user_feedback: Dict[str, bool],
+) -> Dict[str, Any]:
+    tasks      = [tk.model_copy() for tk in state.tasks]
+    task_map   = {tk.id: tk for tk in tasks}
+    activities = list(state.recent_activities)
+
+    for update in state.last_reprioritization:
+        task = task_map.get(update["task_id"])
+        if not task:
+            continue
+        ts = datetime.now(timezone.utc).isoformat()
+        if user_feedback.get(update["task_id"], False):
+            old = task.priority
+            task.priority = update["new_priority"]
+            activities.append(
+                f"[{ts}] User confirmed reprioritization of "
+                f"'{task.title}' from {old} → {task.priority}"
+            )
+        else:
+            activities.append(
+                f"[{ts}] User rejected reprioritization of '{task.title}'."
+            )
+
+    return {
+        "tasks": tasks,
+        "recent_activities": activities,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }

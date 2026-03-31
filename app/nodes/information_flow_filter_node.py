@@ -1,157 +1,158 @@
-# app/nodes/information_flow_filter_node.py
+# nodes/information_flow_filter_node.py
 
-from state import AgentStateDict
-from datetime import datetime
-from typing import List, Optional, Dict
+from __future__ import annotations
 
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import structlog
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
+from services.llm_service import llm_service
+from state import AgentState
 
-load_dotenv()
-
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
+log = structlog.get_logger(__name__)
 
 
-# 🌟 Output Schema
-class NotificationDecision(BaseModel):
-    notification: str = Field(..., description="The content/summary of the notification.")
-    action: str = Field(..., description="urgent | batch | ignore | mute")
-    reason: Optional[str] = Field(None, description="Reason for this decision")
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
+
+class _NotificationDecision(BaseModel):
+    notification: str
+    action: str = Field(..., pattern="^(urgent|batch|ignore|mute)$")
+    reason: Optional[str] = None
 
 
-class NotificationFilterResponse(BaseModel):
-    decisions: List[NotificationDecision]
+class _NotificationFilterResponse(BaseModel):
+    decisions: List[_NotificationDecision]
 
 
-# ✅ Parser
-parser = PydanticOutputParser(pydantic_object=NotificationFilterResponse)
+_parser = PydanticOutputParser(pydantic_object=_NotificationFilterResponse)
 
-
-# 🌟 Prompt Template
-prompt = PromptTemplate(
+_PROMPT = PromptTemplate(
     template="""
-You are ZenMaster's Information Flow Filter – an advanced focus management system.
+You are ZenMaster's Information Flow Filter — an advanced focus management system.
 
----
-
-🧠 **User Context:**
+🧠 User Context:
 - Cognitive load: {cognitive_load}
 - Focus level: {focus_level}
 - Stress level: {stress_level}
 - Burnout risk: {burnout_risk}
-- Detected Stress Signatures: {stress_signatures}
-- Current Focus Mode: {focus_mode}
-- Active Focus Block: {active_focus_block}
+- Detected stress signatures: {stress_signatures}
+- Focus mode active: {focus_mode}
+- Active focus block: {active_focus_block}
 
-📨 **Incoming Notifications:**
+📨 Incoming Notifications:
 {notification_list}
 
----
+For each notification decide:
+- urgent  → notify immediately
+- batch   → hold for next catch-up slot
+- ignore  → suppress completely
+- mute    → temporarily mute sender/channel/app
 
-🎯 **Your Task:**
-For each notification:
-1. Analyze importance using:
-   - Keywords ("urgent", "critical")
-   - Sender priority (e.g., manager/team lead)
-2. Consider user state:
-   - Suppress interruptions during Focus Mode or Active Focus Block.
-   - If stress or burnout risk is high, minimize low-importance notifications.
-3. Decide action:
-   - **urgent** → Notify immediately
-   - **batch** → Hold for next "Catch-up" slot
-   - **ignore** → Suppress completely
-   - **mute** → Temporarily mute sender/channel/app (e.g., Slack, Teams)
-
-📝 Provide a clear reason for each decision.
-
----
+Suppress interruptions during Focus Mode or active Focus Block.
+If stress or burnout risk is high, minimise low-importance notifications.
+Provide a clear reason for each decision.
 
 {format_instructions}
 """,
     input_variables=[
         "cognitive_load", "focus_level", "stress_level", "burnout_risk",
-        "stress_signatures", "focus_mode", "active_focus_block", "notification_list"
+        "stress_signatures", "focus_mode", "active_focus_block", "notification_list",
     ],
-    partial_variables={"format_instructions": parser.get_format_instructions()}
+    partial_variables={"format_instructions": _parser.get_format_instructions()},
 )
 
 
-# 🎯 Node Function
-def information_flow_filter(state: AgentStateDict) -> AgentStateDict:
-    print("🔔 Running Information Flow Filter Node...")
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
-    if not state["pending_notifications"]:
-        print("No notifications to filter.")
-        return state
+def information_flow_filter(state: AgentState) -> Dict[str, Any]:
+    log.info("information_flow_filter.start", user_id=state.user_id,
+             notifications=len(state.pending_notifications))
 
-    notification_list_str = "\n".join([
-        f"- {notif}" for notif in state["pending_notifications"]
-    ])
+    if not state.pending_notifications:
+        log.info("information_flow_filter.skip", reason="no pending notifications")
+        return {}
 
-    # 🧠 Context Inputs
-    stress_signatures = ", ".join(state["cognitive_state"].get("detected_stress_signatures", [])) or "None"
-    focus_mode = "Active" if state["cognitive_state"].get("in_focus_mode", False) else "Inactive"
+    cog = state.cognitive_state
+    stress_signatures = ", ".join(cog.detected_stress_signatures) or "None"
+    focus_mode        = "Active" if cog.in_focus_mode else "Inactive"
+    active_focus      = "Yes" if state.active_focus_block else "No"
 
-    active_focus_block = "Yes" if state.get("active_focus_block", False) else "No"
-
-    # 📝 Format Prompt
-    formatted_prompt = prompt.format(
-        cognitive_load=state["cognitive_state"].get("cognitive_load", "unknown"),
-        focus_level=state["cognitive_state"].get("focus_level", "unknown"),
-        stress_level=state["cognitive_state"].get("stress_level", "unknown"),
-        burnout_risk=state["cognitive_state"].get("burnout_risk", "low"),
-        stress_signatures=stress_signatures,
-        focus_mode=focus_mode,
-        active_focus_block=active_focus_block,
-        notification_list=notification_list_str
+    notification_list_str = "\n".join(
+        f"- {n}" for n in state.pending_notifications
     )
 
-    # 🔥 Invoke LLM
-    response = llm.invoke(formatted_prompt)
+    prompt_str = _PROMPT.format(
+        cognitive_load=cog.cognitive_load,
+        focus_level=cog.focus_level,
+        stress_level=cog.stress_level,
+        burnout_risk=str(cog.burnout_risk),
+        stress_signatures=stress_signatures,
+        focus_mode=focus_mode,
+        active_focus_block=active_focus,
+        notification_list=notification_list_str,
+    )
 
-    # ✅ Parse Output
     try:
-        parsed = parser.parse(response.content)
-    except Exception as e:
-        print("❌ Parsing error:", e)
-        print("Raw response:", response.content)
-        return state  # Fallback: pass all notifications through
+        response = llm_service.invoke(
+            prompt=prompt_str,
+            node_name="InformationFlowFilter",
+            user_id=state.user_id,
+        )
+        parsed: _NotificationFilterResponse = _parser.parse(response.content)
+    except Exception as exc:
+        log.error("information_flow_filter.parse_failed", error=str(exc))
+        return {}
 
-    # 🔥 Apply Filtering Logic
-    allowed_notifications = []
+    # --- Apply decisions ---
+    allowed: List[str] = []
+    activities  = list(state.recent_activities)
+    muted       = list(state.muted_channels)
+    decisions_log: List[Dict] = []
+
     for decision in parsed.decisions:
+        ts = datetime.now(timezone.utc).isoformat()
+        decisions_log.append(decision.model_dump())
+
         if decision.action == "urgent":
-            allowed_notifications.append(decision.notification)
-            state["recent_activities"].append(
-                f"[{datetime.utcnow().isoformat()}] Urgent notification delivered: '{decision.notification}' "
-                f"({decision.reason})"
+            allowed.append(decision.notification)
+            activities.append(
+                f"[{ts}] Urgent notification delivered: "
+                f"'{decision.notification}' ({decision.reason})"
             )
         elif decision.action == "batch":
-            state["recent_activities"].append(
-                f"[{datetime.utcnow().isoformat()}] Batched notification: '{decision.notification}' "
-                f"({decision.reason})"
+            activities.append(
+                f"[{ts}] Batched notification: "
+                f"'{decision.notification}' ({decision.reason})"
             )
         elif decision.action == "ignore":
-            state["recent_activities"].append(
-                f"[{datetime.utcnow().isoformat()}] Ignored notification: '{decision.notification}' "
-                f"({decision.reason})"
+            activities.append(
+                f"[{ts}] Ignored notification: "
+                f"'{decision.notification}' ({decision.reason})"
             )
         elif decision.action == "mute":
-            # 📴 Automatically mute the app/channel until focus block ends
-            state["recent_activities"].append(
-                f"[{datetime.utcnow().isoformat()}] Muted source of '{decision.notification}' temporarily "
-                f"({decision.reason})"
+            activities.append(
+                f"[{ts}] Muted source of "
+                f"'{decision.notification}' ({decision.reason})"
             )
-            muted_source = decision.notification.split(":")[0]  # crude extract (e.g., "Slack", "Email")
-            if muted_source not in state["cognitive_state"].get("muted_channels", []):
-                state["cognitive_state"].setdefault("muted_channels", []).append(muted_source)
+            source = decision.notification.split(":")[0].strip()
+            if source and source not in muted:
+                muted.append(source)
 
-    # ✅ Update pending notifications with only those allowed to pass through
-    state["pending_notifications"] = allowed_notifications
-    state["last_updated"] = datetime.utcnow().isoformat()
+    log.info("information_flow_filter.done", user_id=state.user_id,
+             allowed=len(allowed), total=len(parsed.decisions))
 
-    return state
+    return {
+        "pending_notifications": allowed,
+        "muted_channels": muted,
+        "last_information_filter_decisions": decisions_log,
+        "recent_activities": activities,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }

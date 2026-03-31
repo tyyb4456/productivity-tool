@@ -1,44 +1,46 @@
-from state import AgentStateDict
-from datetime import datetime
-from typing import List, Optional, Dict
+# nodes/intelligent_reminder_generator_node.py
 
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import structlog
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
+from services.llm_service import llm_service
+from state import AgentState
 
-load_dotenv()
-
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
+log = structlog.get_logger(__name__)
 
 
-# 🌟 Output Schema
-class Reminder(BaseModel):
-    reminder_id: str = Field(..., description="Unique ID for the reminder")
-    type: str = Field(..., description="task | wellbeing | focus | hydration | sleep | break")
-    message: str = Field(..., description="Reminder message content")
-    urgency: str = Field(..., description="low | medium | high")
-    reason: Optional[str] = Field(None, description="Why this reminder is being generated")
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
+
+class _Reminder(BaseModel):
+    reminder_id: str
+    type: str = Field(
+        ..., pattern="^(task|wellbeing|focus|hydration|sleep|break)$"
+    )
+    message: str
+    urgency: str = Field(..., pattern="^(low|medium|high)$")
+    reason: Optional[str] = None
 
 
-class ReminderResponse(BaseModel):
-    reminders: List[Reminder]
+class _ReminderResponse(BaseModel):
+    reminders: List[_Reminder]
 
 
-# ✅ Initialize Parser
-parser = PydanticOutputParser(pydantic_object=ReminderResponse)
+_parser = PydanticOutputParser(pydantic_object=_ReminderResponse)
 
-
-# 🌟 Prompt Template
-prompt = PromptTemplate(
+_PROMPT = PromptTemplate(
     template="""
 You are ZenMaster's Intelligent Reminder Generator.
 
----
-
-🧠 **User Cognitive State:**
+🧠 User Cognitive State:
 - Cognitive load: {cognitive_load}
 - Focus level: {focus_level}
 - Stress level: {stress_level}
@@ -46,112 +48,104 @@ You are ZenMaster's Intelligent Reminder Generator.
 - Active Focus Block: {active_focus_block}
 - Muted Channels: {muted_channels}
 
-💖 **Health Data:**
+💖 Health Data:
 - Sleep hours last night: {sleep_hours}
 - Steps today: {steps_today}
 - Mood: {mood}
 - Hydration Status: {hydration_status}
 
-📅 **Upcoming Tasks/Events:**
+📅 Upcoming Tasks/Events:
 {task_list}
 
----
-
-🎯 **Your Task:**
 Generate intelligent reminders that:
-- Respect active Focus Blocks (delay non-critical reminders if focus is active).
-- Encourage micro-breaks if user has been in Deep Work for 90+ minutes.
-- Prompt hydration if hydration status is low.
+- Respect active Focus Blocks (delay non-critical reminders).
+- Encourage micro-breaks if user has been in Deep Work 90+ minutes.
+- Prompt hydration if status is low.
 - Warn if burnout risk is high.
-- Remind about sleep preparation if it's evening.
+- Remind about sleep preparation if it is evening.
 
-For each reminder specify:
-- `type` (task, wellbeing, focus, hydration, sleep, break)
-- `message` (short and clear)
-- `urgency` (low, medium, high)
-- `reason` (why this reminder is relevant now)
-
----
+For each reminder specify: reminder_id, type, message, urgency, reason.
 
 {format_instructions}
 """,
     input_variables=[
         "cognitive_load", "focus_level", "stress_level", "burnout_risk",
         "active_focus_block", "muted_channels", "sleep_hours", "steps_today",
-        "mood", "hydration_status", "task_list"
+        "mood", "hydration_status", "task_list",
     ],
-    partial_variables={"format_instructions": parser.get_format_instructions()}
+    partial_variables={"format_instructions": _parser.get_format_instructions()},
 )
 
 
-# 🎯 Node Function
-def intelligent_reminder_generator(state: AgentStateDict) -> AgentStateDict:
-    print("⏰ Running Intelligent Reminder Generator Node...")
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
-    # 📋 Prepare task list string
-    task_list_str = "\n".join([
-        f"- {task['id']}: {task['title']} | due: {task.get('due_date')} | priority: {task.get('priority')} | status: {task.get('status')}"
-        for task in state.get("tasks", []) if task.get('status') != 'completed'
-    ]) or "None"
+def intelligent_reminder_generator(state: AgentState) -> Dict[str, Any]:
+    log.info("intelligent_reminder_generator.start", user_id=state.user_id)
 
-    # 🌿 Get hydration status (assume we track water intake in health_data)
-    hydration_status = state.get("health_data", {}).get("hydration_level", "unknown")
+    cog  = state.cognitive_state
+    hd   = state.health_data
 
-    # 🔥 Check for active focus block and muted channels
-    active_focus_block = "Yes" if state.get("active_focus_block") else "No"
-    muted_channels_list = state.get("muted_channels") or []
-    muted_channels = ", ".join(muted_channels_list) if muted_channels_list else "None"
+    task_list_str = "\n".join(
+        f"- {tk.id}: {tk.title} | due: {tk.due_date} | "
+        f"priority: {tk.priority} | status: {tk.status}"
+        for tk in state.tasks if tk.status != "completed"
+    ) or "None"
 
-    # 📝 Fill Prompt
-    formatted_prompt = prompt.format(
-        cognitive_load=state["cognitive_state"]["cognitive_load"],
-        focus_level=state["cognitive_state"]["focus_level"],
-        stress_level=state["cognitive_state"]["stress_level"],
-        burnout_risk=str(state["cognitive_state"]["burnout_risk"]),
+    active_focus_block = "Yes" if state.active_focus_block else "No"
+    muted_channels_str = ", ".join(state.muted_channels) or "None"
+
+    prompt_str = _PROMPT.format(
+        cognitive_load=cog.cognitive_load,
+        focus_level=cog.focus_level,
+        stress_level=cog.stress_level,
+        burnout_risk=str(cog.burnout_risk),
         active_focus_block=active_focus_block,
-        muted_channels=muted_channels,
-        sleep_hours=state.get("health_data", {}).get("sleep_hours", 0),
-        steps_today=state.get("health_data", {}).get("steps_today", 0),
-        mood=state.get("health_data", {}).get("mood", "neutral"),
-        hydration_status=hydration_status,
-        task_list=task_list_str
+        muted_channels=muted_channels_str,
+        sleep_hours=hd.sleep_hours,
+        steps_today=hd.steps_today,
+        mood=hd.mood,
+        hydration_status=hd.hydration_level,
+        task_list=task_list_str,
     )
 
-    # 🔥 Invoke LLM
-    response = llm.invoke(formatted_prompt)
-
-    # ✅ Parse response
     try:
-        parsed = parser.parse(response.content)
-    except Exception as e:
-        print("❌ Parsing error:", e)
-        print("Raw response:", response.content)
-        return state
+        response = llm_service.invoke(
+            prompt=prompt_str,
+            node_name="IntelligentReminderGenerator",
+            user_id=state.user_id,
+        )
+        parsed: _ReminderResponse = _parser.parse(response.content)
+    except Exception as exc:
+        log.error("intelligent_reminder_generator.parse_failed", error=str(exc))
+        return {}
 
-    # 🔥 Apply reminders
-    reminder_log = []
+    # Apply — delay low-urgency reminders during active focus block
+    reminder_log: List[Dict] = []
+    activities = list(state.recent_activities)
+
     for reminder in parsed.reminders:
-        # ⏳ Delay low urgency reminders if Focus Block active
-        if active_focus_block == "Yes" and reminder.urgency == "low":
-            state["recent_activities"].append(
-                f"[{datetime.utcnow().isoformat()}] Delayed reminder (Focus Block active): {reminder.message} "
-                f"(Reason: {reminder.reason})"
+        ts = datetime.now(timezone.utc).isoformat()
+        if state.active_focus_block and reminder.urgency == "low":
+            activities.append(
+                f"[{ts}] Delayed reminder (Focus Block active): "
+                f"{reminder.message} (Reason: {reminder.reason})"
             )
             continue
 
-        # ✅ Add reminder to log
         reminder_log.append(reminder.model_dump())
-        state["recent_activities"].append(
-            f"[{datetime.utcnow().isoformat()}] Reminder: {reminder.message} "
-            f"(Type: {reminder.type}, Urgency: {reminder.urgency}, Reason: {reminder.reason})"
+        activities.append(
+            f"[{ts}] Reminder: {reminder.message} "
+            f"(Type: {reminder.type}, Urgency: {reminder.urgency}, "
+            f"Reason: {reminder.reason})"
         )
 
-    # ✅ Update state
-    state["generated_reminders"] = reminder_log
-    state["last_updated"] = datetime.utcnow()
+    log.info("intelligent_reminder_generator.done", user_id=state.user_id,
+             reminders=len(reminder_log))
 
-    print("\n\n-----------------------------------\n\n")
-    print('Intelligent reminder: ', state["generated_reminders"])
-    print("\n\n-----------------------------------\n\n")
-    
-    return state
+    return {
+        "generated_reminders": reminder_log,
+        "recent_activities": activities,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }

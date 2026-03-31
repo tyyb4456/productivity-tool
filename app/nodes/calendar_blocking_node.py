@@ -1,88 +1,130 @@
-from datetime import datetime, timedelta
-from state import AgentStateDict
+# nodes/calendar_blocking_node.py
 
-def calendar_blocking_node(state: AgentStateDict) -> AgentStateDict:
-    print("📅 [CalendarBlockingNode] Generating time blocks for tasks and wellbeing...")
+from __future__ import annotations
 
-    # --- Configurable parameters ---
-    work_day_start = state.get("user_preferences", {}).get("preferred_work_hours", {}).get("start", "09:00")
-    work_day_end = state.get("user_preferences", {}).get("preferred_work_hours", {}).get("end", "17:00")
-    deep_work_duration = state.get("user_preferences", {}).get("preferred_deep_work_duration", 90)  # minutes
-    break_interval = state.get("user_preferences", {}).get("preferred_break_interval", 60)  # minutes
-    break_duration = 15  # minutes
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List
 
-    today = datetime.utcnow().date()
-    work_start_time = datetime.strptime(f"{today}T{work_day_start}", "%Y-%m-%dT%H:%M")
-    work_end_time = datetime.strptime(f"{today}T{work_day_end}", "%Y-%m-%dT%H:%M")
+import structlog
 
-    # --- Existing events (to avoid conflicts) ---
-    existing_events = [
-        (datetime.fromisoformat(event["start_time"]), datetime.fromisoformat(event["end_time"]))
-        for event in state.get("calendar_events", [])
-        if datetime.fromisoformat(event["start_time"]).date() == today
-    ]
+from models import CalendarEvent
+from state import AgentState
 
-    def is_time_slot_free(start: datetime, end: datetime) -> bool:
-        for ev_start, ev_end in existing_events:
-            if start < ev_end and end > ev_start:
-                return False  # Conflict detected
-        return True
+log = structlog.get_logger(__name__)
 
-    # --- Start blocking ---
-    new_blocks = []
-    current_time = work_start_time
 
-    pending_tasks = sorted(
-        [t for t in state.get("tasks", []) if t["status"] != "completed"],
-        key=lambda t: t.get("priority", "normal"),
-        reverse=True
+def calendar_blocking_node(state: AgentState) -> Dict[str, Any]:
+    log.info("calendar_blocking_node.start", user_id=state.user_id)
+
+    prefs = state.user_preferences
+    work_start_str   = prefs.preferred_work_hours.get("start", "09:00")
+    work_end_str     = prefs.preferred_work_hours.get("end",   "17:00")
+    deep_work_mins   = prefs.preferred_deep_work_duration
+    break_duration   = 15       # minutes — fixed, could become a preference
+
+    today          = datetime.now(timezone.utc).date()
+    work_start     = datetime.strptime(
+        f"{today}T{work_start_str}", "%Y-%m-%dT%H:%M"
+    ).replace(tzinfo=timezone.utc)
+    work_end       = datetime.strptime(
+        f"{today}T{work_end_str}", "%Y-%m-%dT%H:%M"
+    ).replace(tzinfo=timezone.utc)
+
+    # Build a list of (start, end) busy intervals from existing events today
+    existing: List[tuple] = []
+    for ev in state.calendar_events:
+        try:
+            s = datetime.fromisoformat(ev.start_time)
+            e = datetime.fromisoformat(ev.end_time)
+            if s.date() == today:
+                existing.append((s, e))
+        except (ValueError, AttributeError):
+            pass
+
+    def _is_free(start: datetime, end: datetime) -> bool:
+        return all(start >= e or end <= s for s, e in existing)
+
+    # Sort pending tasks by priority (high first)
+    _priority_order = {"urgent": 0, "high": 1, "normal": 2, "medium": 2, "low": 3}
+    pending = sorted(
+        [tk for tk in state.tasks if tk.status != "completed"],
+        key=lambda tk: _priority_order.get(tk.priority, 2),
     )
 
-    while current_time + timedelta(minutes=deep_work_duration) <= work_end_time and pending_tasks:
-        block_end = current_time + timedelta(minutes=deep_work_duration)
+    new_blocks: List[Dict] = []
+    current = work_start
 
-        if is_time_slot_free(current_time, block_end):
-            task = pending_tasks.pop(0)
+    for task in pending:
+        block_end = current + timedelta(minutes=deep_work_mins)
+        if block_end > work_end:
+            break
+
+        # Find first free slot (skip 15 min at a time if occupied)
+        attempts = 0
+        while not _is_free(current, block_end) and attempts < 20:
+            current   += timedelta(minutes=15)
+            block_end  = current + timedelta(minutes=deep_work_mins)
+            attempts  += 1
+
+        if block_end > work_end:
+            break
+
+        block = {
+            "title": f"Focus Block: {task.title}",
+            "start_time": current.isoformat(),
+            "end_time":   block_end.isoformat(),
+        }
+        new_blocks.append(block)
+        existing.append((current, block_end))
+        log.info("calendar_blocking_node.focus_block",
+                 task=task.title, start=current.isoformat())
+        current = block_end
+
+        # Insert break after each focus block
+        break_end = current + timedelta(minutes=break_duration)
+        if break_end <= work_end and _is_free(current, break_end):
+            brk = {
+                "title":      "Break: Stretch & Hydrate",
+                "start_time": current.isoformat(),
+                "end_time":   break_end.isoformat(),
+            }
+            new_blocks.append(brk)
+            existing.append((current, break_end))
+            current = break_end
+
+    # Add wind-down block if burnout risk is active
+    if state.cognitive_state.burnout_risk:
+        wind_start = work_end - timedelta(minutes=30)
+        if _is_free(wind_start, work_end):
             new_blocks.append({
-                "title": f"Focus Block: {task['title']}",
-                "start_time": current_time.isoformat(),
-                "end_time": block_end.isoformat()
+                "title":      "Wind-down: Mindfulness / Journaling",
+                "start_time": wind_start.isoformat(),
+                "end_time":   work_end.isoformat(),
             })
-            print(f"✅ Scheduled Focus Block: {task['title']} from {current_time.time()} to {block_end.time()}")
-            current_time = block_end
-        else:
-            current_time += timedelta(minutes=15)  # Skip ahead to find free slot
+            log.info("calendar_blocking_node.wind_down_added")
 
-        # Insert a break after each focus block
-        if current_time + timedelta(minutes=break_duration) <= work_end_time and is_time_slot_free(current_time, current_time + timedelta(minutes=break_duration)):
-            new_blocks.append({
-                "title": "Break: Stretch & Hydrate",
-                "start_time": current_time.isoformat(),
-                "end_time": (current_time + timedelta(minutes=break_duration)).isoformat()
-            })
-            print(f"☕ Scheduled Break at {current_time.time()} for {break_duration} mins")
-            current_time += timedelta(minutes=break_duration)
+    # Merge into calendar_events as CalendarEvent objects
+    merged_events = list(state.calendar_events)
+    for blk in new_blocks:
+        merged_events.append(CalendarEvent(
+            id=f"zenmaster-block-{blk['start_time']}",
+            title=blk["title"],
+            start_time=blk["start_time"],
+            end_time=blk["end_time"],
+            source="ZenMaster",
+            status="confirmed",
+        ))
 
-    # --- Add wellbeing block in evening if burnout risk detected ---
-    burnout_risk = state.get("cognitive_state", {}).get("burnout_risk", False)
-    if burnout_risk:
-        wind_down_start = work_end_time - timedelta(minutes=30)
-        if is_time_slot_free(wind_down_start, work_end_time):
-            new_blocks.append({
-                "title": "Wind-down: Mindfulness / Journaling",
-                "start_time": wind_down_start.isoformat(),
-                "end_time": work_end_time.isoformat()
-            })
-            print(f"🧘 Added Wind-down block at {wind_down_start.time()}")
+    ts = datetime.now(timezone.utc).isoformat()
+    activities = list(state.recent_activities)
+    activities.append(f"[{ts}] Calendar blocked {len(new_blocks)} new events.")
 
-    # --- Merge new blocks into calendar ---
-    state.setdefault("calendar_events", []).extend(new_blocks)
-    state.setdefault("recent_activities", []).append(
-        f"[{datetime.utcnow().isoformat()}] Calendar blocked {len(new_blocks)} new events."
-    )
-    state["last_updated"] = datetime.utcnow().isoformat()
+    log.info("calendar_blocking_node.done", user_id=state.user_id,
+             blocks=len(new_blocks))
 
-    print("\n\n-----------------------------------\n\n")
-    print(f"📅 New calendar blocks created: {new_blocks}")
-    print("\n\n-----------------------------------\n\n")
-    return state
+    return {
+        "calendar_events": merged_events,
+        "last_calendar_blocks": new_blocks,
+        "recent_activities": activities,
+        "last_updated": ts,
+    }

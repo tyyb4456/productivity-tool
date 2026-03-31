@@ -1,67 +1,81 @@
-# app/nodes/user_preferences_learner_node.py
+# nodes/user_preferences_learner_node.py
 
-from datetime import datetime
-from typing import Dict
-from state import AgentStateDict
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict
+
+import structlog
+
+from state import AgentState
+
+log = structlog.get_logger(__name__)
 
 
-def user_preferences_learner(state: AgentStateDict) -> AgentStateDict:
-    print("📖 [UserPreferencesLearner] Learning user preferences from historical data...")
+def user_preferences_learner(state: AgentState) -> Dict[str, Any]:
+    log.info("user_preferences_learner.start", user_id=state.user_id)
 
-    # 🕒 Adjust preferred work hours based on late-night activity
-    late_night_activity = any(
-        snapshot["inputs"].get("communication_summary", {}).get("late_night_activity", False)
-        for snapshot in state.get("assessment_history", [])[-14:]  # Last 2 weeks
+    prefs      = state.user_preferences.model_copy(deep=True)
+    activities = list(state.recent_activities)
+
+    # --- Adjust work hours based on late-night activity ---
+    late_night_detected = any(
+        snap.inputs.get("communication_summary", {}).get("late_night_activity", False)
+        for snap in state.assessment_history[-14:]
     )
-    if late_night_activity:
-        old_hours = state["user_preferences"]["preferred_work_hours"].copy()
-        state["user_preferences"]["preferred_work_hours"] = {"start": "11:00", "end": "19:00"}
-        print(f"🕒 Adjusted preferred work hours from {old_hours} to {state['user_preferences']['preferred_work_hours']}")
+    if late_night_detected:
+        old = prefs.preferred_work_hours.copy()
+        prefs.preferred_work_hours = {"start": "11:00", "end": "19:00"}
+        log.info("user_preferences_learner.work_hours_adjusted",
+                 old=old, new=prefs.preferred_work_hours)
 
-    # ⚡ Adjust deep work block duration if user shows low energy after long sessions
-    last_week = state.get("assessment_history", [])[-7:]
-    avg_energy = sum(
-        (s["assessment"].get("energy_level_score") or 0) for s in last_week
-    ) / max(len(last_week), 1)
-    if avg_energy < 0.5:
-        old_duration = state["user_preferences"]["preferred_deep_work_duration"]
-        new_duration = max(45, old_duration - 15)
-        state["user_preferences"]["preferred_deep_work_duration"] = new_duration
-        print(f"⚡ Reduced deep work duration from {old_duration} mins to {new_duration} mins due to low energy.")
+    # --- Reduce deep work duration if average energy is low ---
+    last_week = state.assessment_history[-7:]
+    if last_week:
+        avg_energy = sum(
+            (snap.assessment.energy_level_score or 0.0) for snap in last_week
+        ) / len(last_week)
+        if avg_energy < 5.0:                                  # 0–10 scale
+            old_dur = prefs.preferred_deep_work_duration
+            prefs.preferred_deep_work_duration = max(45, old_dur - 15)
+            log.info("user_preferences_learner.deep_work_reduced",
+                     old=old_dur, new=prefs.preferred_deep_work_duration)
 
-    # 🧘 Shorten break interval if high stress detected frequently
+    # --- Shorten break interval if high stress appeared ≥3 days ---
     high_stress_days = sum(
-        1 for s in last_week
-        if s["assessment"].get("stress_level") in ["high", "burnout_risk"]
+        1 for snap in last_week
+        if snap.assessment.stress_level in ("high", "burnout_risk")
     )
     if high_stress_days >= 3:
-        old_break = state["user_preferences"]["preferred_break_interval"]
-        new_break = max(30, old_break - 10)
-        state["user_preferences"]["preferred_break_interval"] = new_break
-        print(f"⏸️ Shortened break interval from {old_break} mins to {new_break} mins due to repeated stress.")
+        old_brk = prefs.preferred_break_interval
+        prefs.preferred_break_interval = max(30, old_brk - 10)
+        log.info("user_preferences_learner.break_interval_shortened",
+                 old=old_brk, new=prefs.preferred_break_interval)
 
-    # 🔥 Detect recurring stress patterns (stress hot zones)
+    # --- Learn stress hot zones ---
     stress_patterns: Dict[str, str] = {}
-    for snapshot in state.get("assessment_history", []):
-        ts = snapshot["timestamp"]
-        if isinstance(ts, datetime):
-            ts = ts.strftime("%A %H:00")  # Example: "Tuesday 18:00"
-        level = snapshot["assessment"].get("stress_level")
-        if level in ["high", "burnout_risk"]:
-            stress_patterns[ts] = level
+    for snap in state.assessment_history:
+        ts = snap.timestamp
+        try:
+            dt = datetime.fromisoformat(ts)
+            label = dt.strftime("%A %H:00")   # e.g. "Tuesday 18:00"
+        except ValueError:
+            continue
+        if snap.assessment.stress_level in ("high", "burnout_risk"):
+            stress_patterns[label] = snap.assessment.stress_level
 
-    state["user_preferences"]["stress_patterns"] = stress_patterns
-    if stress_patterns:
-        print(f"🔥 Learned stress patterns: {stress_patterns}")
+    prefs.stress_patterns = stress_patterns
 
-    print("\n\n-----------------------------------\n\n")
-    print("📖 User preferences learning complete.")
-    print(f"📝 Updated user preferences: {state['user_preferences']}")
-    print("\n\n-----------------------------------\n\n")
-
-    # 📝 Log update activity
-    state["recent_activities"].append(
-        f"[{datetime.utcnow().isoformat()}] Updated user preferences based on historical behavior."
+    ts_now = datetime.now(timezone.utc).isoformat()
+    activities.append(
+        f"[{ts_now}] Updated user preferences from historical behaviour."
     )
 
-    return state
+    log.info("user_preferences_learner.done", user_id=state.user_id,
+             stress_hot_zones=len(stress_patterns))
+
+    return {
+        "user_preferences": prefs,
+        "recent_activities": activities,
+        "last_updated": ts_now,
+    }
